@@ -1,9 +1,6 @@
 blake3
 ------
 
-[![GoDoc](https://godoc.org/github.com/forkcloser/blake3?status.svg)](https://godoc.org/github.com/forkcloser/blake3)
-[![Go Report Card](http://goreportcard.com/badge/github.com/forkcloser/blake3)](https://goreportcard.com/report/github.com/forkcloser/blake3)
-
 ```
 go get github.com/forkcloser/blake3
 ```

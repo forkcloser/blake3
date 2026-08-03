@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
-	"fmt"
 	"io"
 	"math"
 	"os"
@@ -46,19 +45,21 @@ func TestBaoGolden(t *testing.T) {
 
 	// test empty input
 	interleaved, root = bao.EncodeBuf(nil, 0, false)
-	if toHex(root[:]) != "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262" {
+	switch {
+	case toHex(root[:]) != "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262":
 		t.Errorf("bad root: %x", root)
-	} else if toHex(interleaved[:]) != "0000000000000000" {
+	case toHex(interleaved) != "0000000000000000":
 		t.Errorf("bad interleaved encoding: %x", interleaved)
-	} else if !bao.VerifyBuf(interleaved, nil, 0, root) {
+	case !bao.VerifyBuf(interleaved, nil, 0, root):
 		t.Error("verify failed")
 	}
 	outboard, root = bao.EncodeBuf(nil, 0, true)
-	if toHex(root[:]) != "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262" {
+	switch {
+	case toHex(root[:]) != "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262":
 		t.Errorf("bad root: %x", root)
-	} else if toHex(outboard[:]) != "0000000000000000" {
+	case toHex(outboard) != "0000000000000000":
 		t.Errorf("bad outboard encoding: %x", outboard)
-	} else if !bao.VerifyBuf(nil, outboard, 0, root) {
+	case !bao.VerifyBuf(nil, outboard, 0, root):
 		t.Error("verify failed")
 	}
 }
@@ -154,7 +155,7 @@ func TestBaoChunkGroup(t *testing.T) {
 	} {
 		input := baoInput(test.inputLen)
 		_, root := bao.EncodeBuf(input, group, false)
-		if out := fmt.Sprintf("%x", root); out != test.exp {
+		if out := toHex(root[:]); out != test.exp {
 			t.Errorf("output %v did not match test vector:\n\texpected: %v...\n\t     got: %v...", test.inputLen, test.exp[:10], out[:10])
 		}
 	}

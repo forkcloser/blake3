@@ -4,7 +4,7 @@ import (
 	"unsafe"
 )
 
-//go:generate go run avo/gen.go -out blake3_amd64.s
+//go:generate go run -C ../avo . -out ../guts/compress_amd64.s
 
 //go:noescape
 func compressChunksAVX512(cvs *[16][8]uint32, buf *[16 * ChunkSize]byte, key *[8]uint32, counter uint64, flags uint32)

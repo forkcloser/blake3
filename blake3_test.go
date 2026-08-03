@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"io"
 	"math"
 	"math/rand"
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/forkcloser/blake3"
@@ -139,7 +140,7 @@ func TestXOF(t *testing.T) {
 		t.Errorf("expected (1000, nil) when reading near end of stream, got (%v, %v)", n, err)
 	}
 	n, err = xof.Read(buf)
-	if n != 0 || err != io.EOF {
+	if n != 0 || !errors.Is(err, io.EOF) {
 		t.Errorf("expected (0, EOF) when reading past end of stream, got (%v, %v)", n, err)
 	}
 
@@ -377,7 +378,7 @@ func BenchmarkWrite(b *testing.B) {
 
 func BenchmarkXOF(b *testing.B) {
 	for _, size := range []int64{64, 1024, 65536, 1048576} {
-		b.Run(fmt.Sprint(size), func(b *testing.B) {
+		b.Run(strconv.FormatInt(size, 10), func(b *testing.B) {
 			b.ReportAllocs()
 			b.SetBytes(size)
 			buf := make([]byte, size)
@@ -392,7 +393,7 @@ func BenchmarkXOF(b *testing.B) {
 
 func BenchmarkSum256(b *testing.B) {
 	for _, size := range []int64{64, 1024, 65536, 1048576} {
-		b.Run(fmt.Sprint(size), func(b *testing.B) {
+		b.Run(strconv.FormatInt(size, 10), func(b *testing.B) {
 			b.ReportAllocs()
 			b.SetBytes(size)
 			buf := make([]byte, size)

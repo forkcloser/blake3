@@ -243,10 +243,10 @@ func ExtractSlice(dst io.Writer, data, outboard io.Reader, group int, offset uin
 	groupSize := uint64(guts.ChunkSize << group)
 	buf := make([]byte, groupSize)
 	var err error
-	read := func(r io.Reader, n uint64, copy bool) {
+	read := func(r io.Reader, n uint64, emit bool) {
 		if err == nil {
 			_, err = io.ReadFull(r, buf[:n])
-			if err == nil && copy {
+			if err == nil && emit {
 				_, err = dst.Write(buf[:n])
 			}
 		}
@@ -362,7 +362,7 @@ func VerifySlice(data []byte, group int, offset uint64, length uint64, root [32]
 	return buf.Bytes(), true
 }
 
-// VerifyChunks verifies the provided chunks with a full outboard encoding.
+// VerifyChunk verifies the provided chunks with a full outboard encoding.
 func VerifyChunk(chunks, outboard []byte, group int, offset uint64, root [32]byte) bool {
 	cbuf := bytes.NewBuffer(chunks)
 	obuf := bytes.NewBuffer(outboard)

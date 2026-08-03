@@ -197,7 +197,8 @@ func Sum256(b []byte) (out [32]byte) {
 // Sum512 returns the unkeyed BLAKE3 hash of b, truncated to 512 bits.
 func Sum512(b []byte) (out [64]byte) {
 	var n guts.Node
-	if len(b) <= guts.BlockSize {
+	switch {
+	case len(b) <= guts.BlockSize:
 		var block [64]byte
 		copy(block[:], b)
 		return guts.WordsToBytes(guts.CompressNode(guts.Node{
@@ -206,10 +207,10 @@ func Sum512(b []byte) (out [64]byte) {
 			BlockLen: uint32(len(b)),
 			Flags:    guts.FlagChunkStart | guts.FlagChunkEnd | guts.FlagRoot,
 		}))
-	} else if len(b) <= guts.ChunkSize {
+	case len(b) <= guts.ChunkSize:
 		n = guts.CompressChunk(b, &guts.IV, 0, 0)
 		n.Flags |= guts.FlagRoot
-	} else {
+	default:
 		h := *defaultHasher
 		h.Write(b)
 		n = h.rootNode()
@@ -357,7 +358,7 @@ func (or *OutputReader) Seek(offset int64, whence int) (int64, error) {
 // ensure that Hasher implements hash.Hash
 var _ hash.Hash = (*Hasher)(nil)
 
-// EncodedSize returns the size of a Bao encoding for the provided quantity
+// BaoEncodedSize returns the size of a Bao encoding for the provided quantity
 // of data.
 //
 // Deprecated: Use bao.EncodedSize instead.
