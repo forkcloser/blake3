@@ -8,7 +8,7 @@ import (
 	"io"
 	"math/bits"
 
-	"lukechampine.com/blake3/guts"
+	"github.com/forkcloser/blake3/guts"
 )
 
 func bytesToCV(b []byte) (cv [8]uint32) {
@@ -28,7 +28,9 @@ func cvToBytes(cv *[8]uint32) *[32]byte {
 }
 
 func compressGroup(p []byte, counter uint64) guts.Node {
-	var stack [54 - guts.MaxSIMD][8]uint32
+	// stack size is log2(maximum number of buffers in a group), i.e.
+	// log2(2^64 bytes / ChunkSize / MaxSIMD) = 64 - 10 - 4
+	var stack [50][8]uint32
 	var sc uint64
 	pushSubtree := func(cv [8]uint32) {
 		i := 0
@@ -106,6 +108,9 @@ func Encode(dst io.WriterAt, data io.Reader, dataLen int64, group int, outboard 
 	// the I/O required in half, at the cost of making it a lot trickier to hash
 	// multiple groups in SIMD. However, you can still get the SIMD speedup if
 	// group > 0, so maybe just do that.
+	// parentBuf is reused for all parent nodes; it escapes into dst.WriteAt,
+	// so a per-node buffer would mean a heap allocation per node
+	var parentBuf [64]byte
 	var rec func(bufLen uint64, flags uint32, off uint64) (uint64, [8]uint32)
 	rec = func(bufLen uint64, flags uint32, off uint64) (uint64, [8]uint32) {
 		if err != nil {
@@ -127,8 +132,11 @@ func Encode(dst io.WriterAt, data io.Reader, dataLen int64, group int, outboard 
 			llen += (mid / groupSize) * groupSize
 		}
 		rchildren, r := rec(bufLen-mid, 0, off+64+llen)
-		write(cvToBytes(&l)[:], off)
-		write(cvToBytes(&r)[:], off+32)
+		for i := range l {
+			binary.LittleEndian.PutUint32(parentBuf[4*i:], l[i])
+			binary.LittleEndian.PutUint32(parentBuf[32+4*i:], r[i])
+		}
+		write(parentBuf[:], off)
 		return 2 + lchildren + rchildren, guts.ChainingValue(guts.ParentNode(l, r, &guts.IV, flags))
 	}
 
@@ -141,6 +149,10 @@ func Encode(dst io.WriterAt, data io.Reader, dataLen int64, group int, outboard 
 // Decode reads content and tree data from the provided reader(s), and
 // streams the verified content to dst. It returns false if verification fails.
 // If the content and tree data are interleaved, outboard should be nil.
+//
+// Decode reads the tree data 64 bytes at a time, so if the readers are
+// unbuffered (e.g. os.File), wrapping them in a bufio.Reader will
+// significantly improve performance.
 func Decode(dst io.Writer, data, outboard io.Reader, group int, root [32]byte) (bool, error) {
 	if outboard == nil {
 		outboard = data
@@ -231,10 +243,10 @@ func ExtractSlice(dst io.Writer, data, outboard io.Reader, group int, offset uin
 	groupSize := uint64(guts.ChunkSize << group)
 	buf := make([]byte, groupSize)
 	var err error
-	read := func(r io.Reader, n uint64, copy bool) {
+	read := func(r io.Reader, n uint64, emit bool) {
 		if err == nil {
 			_, err = io.ReadFull(r, buf[:n])
-			if err == nil && copy {
+			if err == nil && emit {
 				_, err = dst.Write(buf[:n])
 			}
 		}
@@ -257,7 +269,7 @@ func ExtractSlice(dst io.Writer, data, outboard io.Reader, group int, offset uin
 	}
 	read(outboard, 8, true)
 	dataLen := binary.LittleEndian.Uint64(buf[:8])
-	if dataLen < offset+length {
+	if end := offset + length; end < offset || dataLen < end {
 		return errors.New("invalid slice length")
 	}
 	rec(0, dataLen)
@@ -267,6 +279,10 @@ func ExtractSlice(dst io.Writer, data, outboard io.Reader, group int, offset uin
 // DecodeSlice reads from data, which must contain a slice encoding for the
 // given offset and length, and streams verified content to dst. It returns
 // false if verification fails.
+//
+// DecodeSlice reads the tree data 64 bytes at a time, so if the reader is
+// unbuffered (e.g. os.File), wrapping it in a bufio.Reader will significantly
+// improve performance.
 func DecodeSlice(dst io.Writer, data io.Reader, group int, offset, length uint64, root [32]byte) (bool, error) {
 	groupSize := uint64(guts.ChunkSize << group)
 	buf := make([]byte, groupSize)
@@ -292,6 +308,13 @@ func DecodeSlice(dst io.Writer, data io.Reader, group int, offset, length uint64
 		if err != nil {
 			return false
 		} else if bufLen <= groupSize {
+			if bufLen == 0 {
+				// the tree for empty data is a single empty group; there is
+				// no data to decode, but we can still verify the root
+				n := compressGroup(nil, 0)
+				n.Flags |= flags
+				return cv == guts.ChainingValue(n)
+			}
 			if !inSlice {
 				return true
 			}
@@ -321,7 +344,7 @@ func DecodeSlice(dst io.Writer, data io.Reader, group int, offset, length uint64
 	}
 
 	dataLen := binary.LittleEndian.Uint64(read(8))
-	if dataLen < offset+length {
+	if end := offset + length; end < offset || dataLen < end {
 		return false, errors.New("invalid slice length")
 	}
 	ok := rec(bytesToCV(root[:]), 0, dataLen, guts.FlagRoot)
@@ -339,13 +362,16 @@ func VerifySlice(data []byte, group int, offset uint64, length uint64, root [32]
 	return buf.Bytes(), true
 }
 
-// VerifyChunks verifies the provided chunks with a full outboard encoding.
+// VerifyChunk verifies the provided chunks with a full outboard encoding.
 func VerifyChunk(chunks, outboard []byte, group int, offset uint64, root [32]byte) bool {
 	cbuf := bytes.NewBuffer(chunks)
 	obuf := bytes.NewBuffer(outboard)
 	groupSize := uint64(guts.ChunkSize << group)
 	length := uint64(len(chunks))
 	nodesWithin := func(bufLen uint64) int {
+		if bufLen <= groupSize {
+			return 0 // leaf
+		}
 		n := int(bufLen / groupSize)
 		if bufLen%groupSize == 0 {
 			n--
@@ -357,6 +383,13 @@ func VerifyChunk(chunks, outboard []byte, group int, offset uint64, root [32]byt
 	rec = func(cv [8]uint32, pos, bufLen uint64, flags uint32) bool {
 		inSlice := pos < (offset+length) && offset < (pos+bufLen)
 		if bufLen <= groupSize {
+			if bufLen == 0 {
+				// the tree for empty data is a single empty group; there are
+				// no chunks to verify, but we can still verify the root
+				n := compressGroup(nil, 0)
+				n.Flags |= flags
+				return cv == guts.ChainingValue(n)
+			}
 			if !inSlice {
 				return true
 			}
@@ -378,7 +411,7 @@ func VerifyChunk(chunks, outboard []byte, group int, offset uint64, root [32]byt
 		return false
 	}
 	dataLen := binary.LittleEndian.Uint64(obuf.Next(8))
-	if dataLen < offset+length || obuf.Len() != 64*nodesWithin(dataLen) {
+	if end := offset + length; end < offset || dataLen < end || obuf.Len() != 64*nodesWithin(dataLen) {
 		return false
 	}
 	return rec(bytesToCV(root[:]), 0, dataLen, guts.FlagRoot)

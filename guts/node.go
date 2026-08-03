@@ -66,17 +66,21 @@ func Eigentrees(counter uint64, chunks uint64) (trees []int) {
 // CompressEigentree compresses a buffer of 2^n chunks in parallel, returning
 // their root node.
 func CompressEigentree(buf []byte, key *[8]uint32, counter uint64, flags uint32) Node {
-	if numChunks := uint64(len(buf) / ChunkSize); bits.OnesCount64(numChunks) != 1 {
+	numChunks := uint64(len(buf) / ChunkSize)
+	switch {
+	case bits.OnesCount64(numChunks) != 1:
 		panic("non-power-of-two eigentree size")
-	} else if numChunks == 1 {
+	case numChunks == 1:
 		return CompressChunk(buf, key, counter, flags)
-	} else if numChunks <= MaxSIMD {
-		buflen := len(buf)
+	case numChunks <= MaxSIMD:
 		if cap(buf) < MaxSIMD*ChunkSize {
-			buf = append(buf, make([]byte, MaxSIMD*ChunkSize-len(buf))...)
+			// CompressBuffer requires a full-size buffer; copy into a
+			// stack-allocated one rather than growing buf on the heap
+			var tmp [MaxSIMD * ChunkSize]byte
+			return CompressBuffer(&tmp, copy(tmp[:], buf), key, counter, flags)
 		}
-		return CompressBuffer((*[MaxSIMD * ChunkSize]byte)(buf[:MaxSIMD*ChunkSize]), buflen, key, counter, flags)
-	} else {
+		return CompressBuffer((*[MaxSIMD * ChunkSize]byte)(buf[:MaxSIMD*ChunkSize]), len(buf), key, counter, flags)
+	default:
 		cvs := make([][8]uint32, numChunks/MaxSIMD)
 		var wg sync.WaitGroup
 		for i := range cvs {

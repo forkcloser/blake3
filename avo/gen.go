@@ -1,6 +1,6 @@
-//go:build ignore
-// +build ignore
-
+// Package main generates the amd64 assembly implementations in guts.
+// It is its own module so that avo — a code-generation dependency, not a
+// library dependency — never appears in the main module's graph.
 package main
 
 import (

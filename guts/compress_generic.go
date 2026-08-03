@@ -1,7 +1,6 @@
 package guts
 
 import (
-	"bytes"
 	"math/bits"
 )
 
@@ -116,8 +115,10 @@ func compressBufferGeneric(buf *[MaxSIMD * ChunkSize]byte, buflen int, key *[8]u
 	}
 	var cvs [MaxSIMD][8]uint32
 	var numCVs uint64
-	for bb := bytes.NewBuffer(buf[:buflen]); bb.Len() > 0; numCVs++ {
-		cvs[numCVs] = ChainingValue(CompressChunk(bb.Next(ChunkSize), key, counter+numCVs, flags))
+	for i := 0; i < buflen; i += ChunkSize {
+		chunk := buf[i:min(i+ChunkSize, buflen)]
+		cvs[numCVs] = ChainingValue(CompressChunk(chunk, key, counter+numCVs, flags))
+		numCVs++
 	}
 	return mergeSubtrees(&cvs, numCVs, key, flags)
 }

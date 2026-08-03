@@ -4,8 +4,6 @@ import (
 	"unsafe"
 )
 
-//go:generate go run avo/gen.go -out blake3_amd64.s
-
 //go:noescape
 func compressChunksAVX512(cvs *[16][8]uint32, buf *[16 * ChunkSize]byte, key *[8]uint32, counter uint64, flags uint32)
 
@@ -106,6 +104,24 @@ func CompressBlocks(out *[MaxSIMD * BlockSize]byte, n Node) {
 		outs := (*[MaxSIMD][64]byte)(unsafe.Pointer(out))
 		compressBlocksGeneric(outs, n)
 	}
+}
+
+// CompressBlocksN compresses at least numBlocks copies of n with successive
+// counter values, storing the results in out and returning the number of
+// blocks computed, which may exceed numBlocks if doing so is cheap.
+func CompressBlocksN(out *[MaxSIMD * BlockSize]byte, n Node, numBlocks int) int {
+	if haveAVX512 || haveAVX2 {
+		// all MaxSIMD blocks are computed in (at most) two SIMD dispatches, so
+		// there is nothing to save by computing fewer
+		CompressBlocks(out, n)
+		return MaxSIMD
+	}
+	outs := (*[MaxSIMD][64]byte)(unsafe.Pointer(out))
+	for i := range numBlocks {
+		outs[i] = WordsToBytes(CompressNode(n))
+		n.Counter++
+	}
+	return numBlocks
 }
 
 func mergeSubtrees(cvs *[MaxSIMD][8]uint32, numCVs uint64, key *[8]uint32, flags uint32) Node {

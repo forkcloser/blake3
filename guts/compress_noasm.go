@@ -1,5 +1,4 @@
 //go:build !amd64
-// +build !amd64
 
 package guts
 
@@ -46,6 +45,18 @@ func CompressBlocks(out *[MaxSIMD * BlockSize]byte, n Node) {
 	for i := range outs {
 		copy(out[i*64:], outs[i][:])
 	}
+}
+
+// CompressBlocksN compresses at least numBlocks copies of n with successive
+// counter values, storing the results in out and returning the number of
+// blocks computed, which may exceed numBlocks if doing so is cheap.
+func CompressBlocksN(out *[MaxSIMD * BlockSize]byte, n Node, numBlocks int) int {
+	for i := range numBlocks {
+		block := WordsToBytes(CompressNode(n))
+		copy(out[i*BlockSize:], block[:])
+		n.Counter++
+	}
+	return numBlocks
 }
 
 func mergeSubtrees(cvs *[MaxSIMD][8]uint32, numCVs uint64, key *[8]uint32, flags uint32) Node {

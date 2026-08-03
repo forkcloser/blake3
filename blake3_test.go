@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"io"
+	"math"
+	"math/rand"
 	"os"
+	"strconv"
 	"testing"
 
-	"lukechampine.com/blake3"
-	"lukechampine.com/blake3/guts"
+	"github.com/forkcloser/blake3"
+	"github.com/forkcloser/blake3/guts"
 )
 
 func toHex(data []byte) string { return hex.EncodeToString(data) }
@@ -74,12 +77,14 @@ func TestXOF(t *testing.T) {
 	for _, vec := range testVectors.Cases {
 		in := testInput[:vec.InputLen]
 
-		// XOF should produce same output as Sum, even when outputting 7 bytes at a time
+		// XOF should produce same output as Sum, even when outputting 7 bytes at a time.
+		// Read well past the digest length, so that the seek tests below stay
+		// within the reference buffer.
 		h := blake3.New(len(vec.Hash)/2, nil)
 		h.Write(in)
 		var xofBuf bytes.Buffer
-		io.CopyBuffer(&xofBuf, io.LimitReader(h.XOF(), int64(len(vec.Hash)/2)), make([]byte, 7))
-		if out := toHex(xofBuf.Bytes()); out != vec.Hash {
+		io.CopyBuffer(&xofBuf, io.LimitReader(h.XOF(), 4096), make([]byte, 7))
+		if out := toHex(xofBuf.Bytes()[:len(vec.Hash)/2]); out != vec.Hash {
 			t.Errorf("XOF output did not match test vector:\n\texpected: %v...\n\t     got: %v...", vec.Hash[:10], out[:10])
 		}
 
@@ -135,7 +140,7 @@ func TestXOF(t *testing.T) {
 		t.Errorf("expected (1000, nil) when reading near end of stream, got (%v, %v)", n, err)
 	}
 	n, err = xof.Read(buf)
-	if n != 0 || err != io.EOF {
+	if n != 0 || !errors.Is(err, io.EOF) {
 		t.Errorf("expected (0, EOF) when reading past end of stream, got (%v, %v)", n, err)
 	}
 
@@ -149,6 +154,15 @@ func TestXOF(t *testing.T) {
 	if err == nil {
 		t.Error("expected invalid offset error, got nil")
 	}
+	_, err = xof.Seek(1, io.SeekEnd)
+	if err == nil {
+		t.Error("expected past-end error, got nil")
+	}
+	xof.Seek(-10, io.SeekEnd)
+	_, err = xof.Seek(math.MaxInt64, io.SeekCurrent)
+	if err == nil {
+		t.Error("expected past-end error, got nil")
+	}
 
 	// test invalid seek whence
 	didPanic := func() (p bool) {
@@ -159,6 +173,123 @@ func TestXOF(t *testing.T) {
 	if !didPanic {
 		t.Error("expected panic when seeking with invalid whence")
 	}
+}
+
+func TestXOFSeek(t *testing.T) {
+	// generate golden output, one block at a time
+	golden := make([]byte, 1<<16)
+	n := guts.CompressChunk(nil, &guts.IV, 0, 0)
+	n.Flags |= guts.FlagRoot
+	for i := 0; i < len(golden); i += guts.BlockSize {
+		block := guts.WordsToBytes(guts.CompressNode(n))
+		copy(golden[i:], block[:])
+		n.Counter++
+	}
+
+	// seeking to any offset should produce the same output as the golden
+	// stream, in particular offsets that are not aligned to the XOF's internal
+	// buffer
+	xof := blake3.New(0, nil).XOF()
+	buf := make([]byte, 100)
+	for _, off := range []int{0, 1, 63, 64, 65, 100, 131, 1000, 1023, 1024, 1025, 1100, 2047, 2048, 3000, len(golden) - len(buf)} {
+		if _, err := xof.Seek(int64(off), io.SeekStart); err != nil {
+			t.Fatal(err)
+		} else if _, err := io.ReadFull(xof, buf); err != nil {
+			t.Fatal(err)
+		}
+		if exp := golden[off:][:len(buf)]; !bytes.Equal(buf, exp) {
+			t.Errorf("Seek(%v, io.SeekStart): expected %x..., got %x...", off, exp[:8], buf[:8])
+		}
+	}
+	xof.Seek(0, io.SeekStart)
+	io.ReadFull(xof, buf) // off = 100
+	xof.Seek(100, io.SeekCurrent)
+	io.ReadFull(xof, buf) // off = 300
+	if exp := golden[200:][:len(buf)]; !bytes.Equal(buf, exp) {
+		t.Errorf("Seek(100, io.SeekCurrent): expected %x..., got %x...", exp[:8], buf[:8])
+	}
+
+	// seek near the end of the stream, to a buffer-unaligned offset; this also
+	// exercises block counters beyond 2^32
+	const rem = 1500
+	off := uint64(math.MaxUint64) - rem // stream ends at 2^64 - 1
+	n = guts.CompressChunk(nil, &guts.IV, 0, 0)
+	n.Flags |= guts.FlagRoot
+	n.Counter = off / guts.BlockSize
+	var endGolden []byte
+	for len(endGolden) < rem+guts.BlockSize {
+		block := guts.WordsToBytes(guts.CompressNode(n))
+		endGolden = append(endGolden, block[:]...)
+		n.Counter++
+	}
+	endGolden = endGolden[off%guts.BlockSize:][:rem]
+	xof.Seek(-rem, io.SeekEnd)
+	end := make([]byte, rem)
+	if _, err := io.ReadFull(xof, end); err != nil {
+		t.Fatal(err)
+	} else if !bytes.Equal(end, endGolden) {
+		t.Errorf("Seek(-%v, io.SeekEnd): expected %x..., got %x...", rem, endGolden[:8], end[:8])
+	}
+}
+
+func TestXOFReadPatterns(t *testing.T) {
+	// generate golden output, one block at a time
+	golden := make([]byte, 1<<20)
+	n := guts.CompressChunk(nil, &guts.IV, 0, 0)
+	n.Flags |= guts.FlagRoot
+	for i := 0; i < len(golden); i += guts.BlockSize {
+		block := guts.WordsToBytes(guts.CompressNode(n))
+		copy(golden[i:], block[:])
+		n.Counter++
+	}
+
+	// interleave reads of various sizes (crossing the buffered, direct, and
+	// parallel paths) with seeks, and confirm that the output always matches
+	// the golden stream
+	rng := rand.New(rand.NewSource(0))
+	xof := blake3.New(0, nil).XOF()
+	off := 0
+	for range 500 {
+		if rng.Intn(4) == 0 {
+			off = rng.Intn(len(golden) / 2)
+			xof.Seek(int64(off), io.SeekStart)
+		}
+		var readSize int
+		switch rng.Intn(4) {
+		case 0:
+			readSize = 1 + rng.Intn(64)
+		case 1:
+			readSize = 1 + rng.Intn(2048)
+		case 2:
+			readSize = 1 + rng.Intn(1<<15)
+		case 3:
+			readSize = 1 + rng.Intn(1<<19)
+		}
+		readSize = min(readSize, len(golden)-off)
+		buf := make([]byte, readSize)
+		if _, err := io.ReadFull(xof, buf); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(buf, golden[off:][:readSize]) {
+			t.Fatalf("read of %v bytes at offset %v did not match golden output", readSize, off)
+		}
+		off += readSize
+	}
+}
+
+func TestNewValidation(t *testing.T) {
+	expectPanic := func(desc string, fn func()) {
+		t.Helper()
+		defer func() {
+			if recover() == nil {
+				t.Errorf("expected panic from %v", desc)
+			}
+		}()
+		fn()
+	}
+	expectPanic("negative size", func() { blake3.New(-1, nil) })
+	expectPanic("short key", func() { blake3.New(32, make([]byte, 16)) })
+	expectPanic("long key", func() { blake3.New(32, make([]byte, 33)) })
 }
 
 func TestSum(t *testing.T) {
@@ -205,8 +336,8 @@ func TestReset(t *testing.T) {
 }
 
 func TestEigentrees(t *testing.T) {
-	for i := uint64(0); i < 64; i++ {
-		for j := uint64(0); j < 64; j++ {
+	for i := range uint64(64) {
+		for j := range uint64(64) {
 			trees := guts.Eigentrees(i, j)
 			x := i
 			for _, tree := range trees {
@@ -247,12 +378,12 @@ func BenchmarkWrite(b *testing.B) {
 
 func BenchmarkXOF(b *testing.B) {
 	for _, size := range []int64{64, 1024, 65536, 1048576} {
-		b.Run(fmt.Sprint(size), func(b *testing.B) {
+		b.Run(strconv.FormatInt(size, 10), func(b *testing.B) {
 			b.ReportAllocs()
 			b.SetBytes(size)
 			buf := make([]byte, size)
 			xof := blake3.New(0, nil).XOF()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				xof.Seek(0, 0)
 				xof.Read(buf)
 			}
@@ -262,11 +393,11 @@ func BenchmarkXOF(b *testing.B) {
 
 func BenchmarkSum256(b *testing.B) {
 	for _, size := range []int64{64, 1024, 65536, 1048576} {
-		b.Run(fmt.Sprint(size), func(b *testing.B) {
+		b.Run(strconv.FormatInt(size, 10), func(b *testing.B) {
 			b.ReportAllocs()
 			b.SetBytes(size)
 			buf := make([]byte, size)
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				blake3.Sum256(buf)
 			}
 		})

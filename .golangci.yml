@@ -1,0 +1,117 @@
+version: "2"
+
+# Linters for a cryptographic hash library. The bias is towards correctness
+# and away from style: checks that would fight the shape of the code (tight
+# compression loops, deliberate width conversions, unsafe casts feeding SIMD
+# kernels) are off, and checks that catch real logic and error-handling
+# mistakes are on.
+
+linters:
+  enable:
+    # Error handling.
+    - errorlint # == and type switches on errors break once anything wraps
+    - nilerr # returning nil after checking an error is never intended
+
+    # Correctness traps that are easy to introduce and hard to see.
+    - bodyclose
+    - copyloopvar
+    - durationcheck
+    - makezero
+    - predeclared # shadowing min/max/clear is a live hazard since Go 1.21
+    - reassign
+    - wastedassign
+
+    # General analysis.
+    - gocritic
+    - gosec
+    - revive
+
+    # This package tracks its own performance closely (zero-allocation hot
+    # paths); fmt.Sprintf in one of them would be a real regression.
+    - perfsprint
+
+    # Hygiene.
+    - misspell
+    - nolintlint
+    - unconvert
+    - usestdlibvars
+
+    # Tests.
+    - thelper
+    - tparallel
+
+  settings:
+    errcheck:
+      exclude-functions:
+        # Infallible by implementation: Hasher.Write always returns nil (the
+        # error exists to satisfy hash.Hash), and OutputReader.Read can only
+        # fail at the end of its 2^64-byte stream.
+        - (*github.com/forkcloser/blake3.Hasher).Write
+        - (*github.com/forkcloser/blake3.OutputReader).Read
+
+    gosec:
+      excludes:
+        # The hash state is words; the wire format is bytes; stream offsets
+        # are uint64 sliced by int lengths. Width conversions are what this
+        # package does — the ones that need bounds guards have them, and are
+        # covered by tests down to the overflow edges (see TestXOFSeek).
+        - G115
+        # guts converts between [64]byte and [16]uint32 views of the same
+        # memory with unsafe on amd64 — that is the SIMD interface, it is
+        # deliberate, and it was reviewed as part of the audit. Flagging
+        # every cast buries the signal.
+        - G103
+        # Duplicates errcheck, which reports the same thing more precisely.
+        - G104
+
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+    staticcheck:
+      checks:
+        - all
+
+    revive:
+      rules:
+        - name: redefines-builtin-id
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: empty-block
+        - name: error-naming
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: range
+        - name: receiver-naming
+        - name: superfluous-else
+        - name: time-naming
+        - name: unexported-return
+        - name: unreachable-code
+        - name: var-declaration
+        - name: waitgroup-by-value
+
+  exclusions:
+    rules:
+      # Tests want a seeded, reproducible PRNG (split-point fuzzing, read
+      # patterns) — the outputs are compared against golden values, so
+      # cryptographic randomness would only make failures unreproducible.
+      - path: _test\.go
+        linters: [gosec]
+        text: G404
+
+      # hash.Hash.Write never returns an error by contract, and the XOF's
+      # Read/Seek only fail at the end of a 2^64-byte stream or on invalid
+      # offsets the tests construct deliberately. The tests exercise these
+      # APIs constantly; checking every call would bury the assertions that
+      # matter, and a real failure still surfaces as a wrong digest.
+      - path: _test\.go
+        linters: [errcheck]
+
+formatters:
+  enable:
+    - gofmt
