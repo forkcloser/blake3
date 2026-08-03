@@ -28,7 +28,9 @@ func cvToBytes(cv *[8]uint32) *[32]byte {
 }
 
 func compressGroup(p []byte, counter uint64) guts.Node {
-	var stack [54 - guts.MaxSIMD][8]uint32
+	// stack size is log2(maximum number of buffers in a group), i.e.
+	// log2(2^64 bytes / ChunkSize / MaxSIMD) = 64 - 10 - 4
+	var stack [50][8]uint32
 	var sc uint64
 	pushSubtree := func(cv [8]uint32) {
 		i := 0
@@ -257,7 +259,7 @@ func ExtractSlice(dst io.Writer, data, outboard io.Reader, group int, offset uin
 	}
 	read(outboard, 8, true)
 	dataLen := binary.LittleEndian.Uint64(buf[:8])
-	if dataLen < offset+length {
+	if end := offset + length; end < offset || dataLen < end {
 		return errors.New("invalid slice length")
 	}
 	rec(0, dataLen)
@@ -292,6 +294,13 @@ func DecodeSlice(dst io.Writer, data io.Reader, group int, offset, length uint64
 		if err != nil {
 			return false
 		} else if bufLen <= groupSize {
+			if bufLen == 0 {
+				// the tree for empty data is a single empty group; there is
+				// no data to decode, but we can still verify the root
+				n := compressGroup(nil, 0)
+				n.Flags |= flags
+				return cv == guts.ChainingValue(n)
+			}
 			if !inSlice {
 				return true
 			}
@@ -321,7 +330,7 @@ func DecodeSlice(dst io.Writer, data io.Reader, group int, offset, length uint64
 	}
 
 	dataLen := binary.LittleEndian.Uint64(read(8))
-	if dataLen < offset+length {
+	if end := offset + length; end < offset || dataLen < end {
 		return false, errors.New("invalid slice length")
 	}
 	ok := rec(bytesToCV(root[:]), 0, dataLen, guts.FlagRoot)
@@ -346,6 +355,9 @@ func VerifyChunk(chunks, outboard []byte, group int, offset uint64, root [32]byt
 	groupSize := uint64(guts.ChunkSize << group)
 	length := uint64(len(chunks))
 	nodesWithin := func(bufLen uint64) int {
+		if bufLen <= groupSize {
+			return 0 // leaf
+		}
 		n := int(bufLen / groupSize)
 		if bufLen%groupSize == 0 {
 			n--
@@ -357,6 +369,13 @@ func VerifyChunk(chunks, outboard []byte, group int, offset uint64, root [32]byt
 	rec = func(cv [8]uint32, pos, bufLen uint64, flags uint32) bool {
 		inSlice := pos < (offset+length) && offset < (pos+bufLen)
 		if bufLen <= groupSize {
+			if bufLen == 0 {
+				// the tree for empty data is a single empty group; there are
+				// no chunks to verify, but we can still verify the root
+				n := compressGroup(nil, 0)
+				n.Flags |= flags
+				return cv == guts.ChainingValue(n)
+			}
 			if !inSlice {
 				return true
 			}
@@ -378,7 +397,7 @@ func VerifyChunk(chunks, outboard []byte, group int, offset uint64, root [32]byt
 		return false
 	}
 	dataLen := binary.LittleEndian.Uint64(obuf.Next(8))
-	if dataLen < offset+length || obuf.Len() != 64*nodesWithin(dataLen) {
+	if end := offset + length; end < offset || dataLen < end || obuf.Len() != 64*nodesWithin(dataLen) {
 		return false
 	}
 	return rec(bytesToCV(root[:]), 0, dataLen, guts.FlagRoot)

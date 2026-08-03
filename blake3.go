@@ -157,10 +157,17 @@ func newHasher(key [8]uint32, flags uint32, size int) *Hasher {
 }
 
 // New returns a Hasher for the specified digest size and key. If key is nil,
-// the hash is unkeyed. Otherwise, len(key) must be 32.
+// the hash is unkeyed. Otherwise, len(key) must be 32; New panics if size is
+// negative or if a key of any other length is provided.
 func New(size int, key []byte) *Hasher {
+	if size < 0 {
+		panic("blake3: digest size cannot be negative")
+	}
 	if key == nil {
 		return newHasher(guts.IV, 0, size)
+	}
+	if len(key) != 32 {
+		panic("blake3: key must be 32 bytes")
 	}
 	var keyWords [8]uint32
 	for i := range keyWords {
@@ -306,10 +313,13 @@ func (or *OutputReader) Seek(offset int64, whence int) (int64, error) {
 				return 0, errors.New("seek position cannot be negative")
 			}
 			off -= uint64(-offset)
-		} else {
-			off += uint64(offset)
+		} else if off += uint64(offset); off < uint64(offset) {
+			return 0, errors.New("seek position cannot exceed end of stream")
 		}
 	case io.SeekEnd:
+		if offset > 0 {
+			return 0, errors.New("seek position cannot exceed end of stream")
+		}
 		off = uint64(offset) - 1
 	default:
 		panic("invalid whence")

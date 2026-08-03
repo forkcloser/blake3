@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"io"
+	"math"
 	"os"
 	"testing"
 
@@ -154,6 +156,69 @@ func TestBaoChunkGroup(t *testing.T) {
 		_, root := bao.EncodeBuf(input, group, false)
 		if out := fmt.Sprintf("%x", root); out != test.exp {
 			t.Errorf("output %v did not match test vector:\n\texpected: %v...\n\t     got: %v...", test.inputLen, test.exp[:10], out[:10])
+		}
+	}
+}
+
+func TestBaoVerifyChunk(t *testing.T) {
+	data := make([]byte, 1<<18)
+	blake3.New(0, nil).XOF().Read(data)
+
+	for _, group := range []int{0, 4} {
+		groupSize := 1024 << group
+		outboard, root := bao.EncodeBuf(data, group, true)
+		for _, g := range []int{0, 1, 5, len(data)/groupSize - 1} {
+			off := g * groupSize
+			chunk := data[off:][:groupSize]
+			if !bao.VerifyChunk(chunk, outboard, group, uint64(off), root) {
+				t.Errorf("group %v: verify failed at offset %v", group, off)
+			}
+			badChunk := append([]byte(nil), chunk...)
+			badChunk[0] ^= 1
+			if bao.VerifyChunk(badChunk, outboard, group, uint64(off), root) {
+				t.Errorf("group %v: verify succeeded with corrupted chunk at offset %v", group, off)
+			}
+		}
+		// multiple contiguous groups
+		if !bao.VerifyChunk(data[:4*groupSize], outboard, group, 0, root) {
+			t.Errorf("group %v: verify failed for contiguous groups", group)
+		}
+	}
+
+	// the encoding of empty data has no chunks, but its root should still be
+	// verified
+	outboard, root := bao.EncodeBuf(nil, 0, true)
+	if !bao.VerifyChunk(nil, outboard, 0, 0, root) {
+		t.Error("verify failed for empty encoding")
+	}
+	badRoot := root
+	badRoot[0] ^= 1
+	if bao.VerifyChunk(nil, outboard, 0, 0, badRoot) {
+		t.Error("verify succeeded for empty encoding with bad root")
+	}
+}
+
+func TestBaoInvalidSliceBounds(t *testing.T) {
+	data := make([]byte, 4096)
+	blake3.New(0, nil).XOF().Read(data)
+	enc, root := bao.EncodeBuf(data, 0, false)
+
+	for _, test := range []struct {
+		off, len uint64
+	}{
+		{0, 4097},                        // out of range
+		{4096, 1},                        // out of range
+		{1 << 63, 1<<63 + 10},            // offset+length overflows
+		{math.MaxUint64, math.MaxUint64}, // offset+length overflows
+	} {
+		if err := bao.ExtractSlice(io.Discard, bytes.NewReader(enc), nil, 0, test.off, test.len); err == nil {
+			t.Errorf("ExtractSlice accepted invalid slice bounds (%v, %v)", test.off, test.len)
+		}
+		if ok, err := bao.DecodeSlice(io.Discard, bytes.NewReader(enc), 0, test.off, test.len, root); ok || err == nil {
+			t.Errorf("DecodeSlice accepted invalid slice bounds (%v, %v)", test.off, test.len)
+		}
+		if _, ok := bao.VerifySlice(enc, 0, test.off, test.len, root); ok {
+			t.Errorf("VerifySlice accepted invalid slice bounds (%v, %v)", test.off, test.len)
 		}
 	}
 }

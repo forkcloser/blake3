@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"testing"
 
@@ -74,12 +75,14 @@ func TestXOF(t *testing.T) {
 	for _, vec := range testVectors.Cases {
 		in := testInput[:vec.InputLen]
 
-		// XOF should produce same output as Sum, even when outputting 7 bytes at a time
+		// XOF should produce same output as Sum, even when outputting 7 bytes at a time.
+		// Read well past the digest length, so that the seek tests below stay
+		// within the reference buffer.
 		h := blake3.New(len(vec.Hash)/2, nil)
 		h.Write(in)
 		var xofBuf bytes.Buffer
-		io.CopyBuffer(&xofBuf, io.LimitReader(h.XOF(), int64(len(vec.Hash)/2)), make([]byte, 7))
-		if out := toHex(xofBuf.Bytes()); out != vec.Hash {
+		io.CopyBuffer(&xofBuf, io.LimitReader(h.XOF(), 4096), make([]byte, 7))
+		if out := toHex(xofBuf.Bytes()[:len(vec.Hash)/2]); out != vec.Hash {
 			t.Errorf("XOF output did not match test vector:\n\texpected: %v...\n\t     got: %v...", vec.Hash[:10], out[:10])
 		}
 
@@ -149,6 +152,15 @@ func TestXOF(t *testing.T) {
 	if err == nil {
 		t.Error("expected invalid offset error, got nil")
 	}
+	_, err = xof.Seek(1, io.SeekEnd)
+	if err == nil {
+		t.Error("expected past-end error, got nil")
+	}
+	xof.Seek(-10, io.SeekEnd)
+	_, err = xof.Seek(math.MaxInt64, io.SeekCurrent)
+	if err == nil {
+		t.Error("expected past-end error, got nil")
+	}
 
 	// test invalid seek whence
 	didPanic := func() (p bool) {
@@ -194,6 +206,43 @@ func TestXOFSeek(t *testing.T) {
 	if exp := golden[200:][:len(buf)]; !bytes.Equal(buf, exp) {
 		t.Errorf("Seek(100, io.SeekCurrent): expected %x..., got %x...", exp[:8], buf[:8])
 	}
+
+	// seek near the end of the stream, to a buffer-unaligned offset; this also
+	// exercises block counters beyond 2^32
+	const rem = 1500
+	off := uint64(math.MaxUint64) - rem // stream ends at 2^64 - 1
+	n = guts.CompressChunk(nil, &guts.IV, 0, 0)
+	n.Flags |= guts.FlagRoot
+	n.Counter = off / guts.BlockSize
+	var endGolden []byte
+	for len(endGolden) < rem+guts.BlockSize {
+		block := guts.WordsToBytes(guts.CompressNode(n))
+		endGolden = append(endGolden, block[:]...)
+		n.Counter++
+	}
+	endGolden = endGolden[off%guts.BlockSize:][:rem]
+	xof.Seek(-rem, io.SeekEnd)
+	end := make([]byte, rem)
+	if _, err := io.ReadFull(xof, end); err != nil {
+		t.Fatal(err)
+	} else if !bytes.Equal(end, endGolden) {
+		t.Errorf("Seek(-%v, io.SeekEnd): expected %x..., got %x...", rem, endGolden[:8], end[:8])
+	}
+}
+
+func TestNewValidation(t *testing.T) {
+	expectPanic := func(desc string, fn func()) {
+		t.Helper()
+		defer func() {
+			if recover() == nil {
+				t.Errorf("expected panic from %v", desc)
+			}
+		}()
+		fn()
+	}
+	expectPanic("negative size", func() { blake3.New(-1, nil) })
+	expectPanic("short key", func() { blake3.New(32, make([]byte, 16)) })
+	expectPanic("long key", func() { blake3.New(32, make([]byte, 33)) })
 }
 
 func TestSum(t *testing.T) {
