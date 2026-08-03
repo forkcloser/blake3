@@ -315,7 +315,10 @@ func (or *OutputReader) Seek(offset int64, whence int) (int64, error) {
 		panic("invalid whence")
 	}
 	or.off = off
-	or.n.Counter = uint64(off) / guts.BlockSize
+	// Read expects or.buf to contain the buffer-aligned window of the stream
+	// surrounding off, so the counter must be aligned to a buffer boundary,
+	// not a block boundary.
+	or.n.Counter = uint64(off) / (guts.MaxSIMD * guts.BlockSize) * guts.MaxSIMD
 	if or.off%(guts.MaxSIMD*guts.BlockSize) != 0 {
 		guts.CompressBlocks(&or.buf, or.n)
 	}

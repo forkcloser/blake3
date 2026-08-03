@@ -161,6 +161,41 @@ func TestXOF(t *testing.T) {
 	}
 }
 
+func TestXOFSeek(t *testing.T) {
+	// generate golden output, one block at a time
+	golden := make([]byte, 1<<16)
+	n := guts.CompressChunk(nil, &guts.IV, 0, 0)
+	n.Flags |= guts.FlagRoot
+	for i := 0; i < len(golden); i += guts.BlockSize {
+		block := guts.WordsToBytes(guts.CompressNode(n))
+		copy(golden[i:], block[:])
+		n.Counter++
+	}
+
+	// seeking to any offset should produce the same output as the golden
+	// stream, in particular offsets that are not aligned to the XOF's internal
+	// buffer
+	xof := blake3.New(0, nil).XOF()
+	buf := make([]byte, 100)
+	for _, off := range []int{0, 1, 63, 64, 65, 100, 131, 1000, 1023, 1024, 1025, 1100, 2047, 2048, 3000, len(golden) - len(buf)} {
+		if _, err := xof.Seek(int64(off), io.SeekStart); err != nil {
+			t.Fatal(err)
+		} else if _, err := io.ReadFull(xof, buf); err != nil {
+			t.Fatal(err)
+		}
+		if exp := golden[off:][:len(buf)]; !bytes.Equal(buf, exp) {
+			t.Errorf("Seek(%v, io.SeekStart): expected %x..., got %x...", off, exp[:8], buf[:8])
+		}
+	}
+	xof.Seek(0, io.SeekStart)
+	io.ReadFull(xof, buf) // off = 100
+	xof.Seek(100, io.SeekCurrent)
+	io.ReadFull(xof, buf) // off = 300
+	if exp := golden[200:][:len(buf)]; !bytes.Equal(buf, exp) {
+		t.Errorf("Seek(100, io.SeekCurrent): expected %x..., got %x...", exp[:8], buf[:8])
+	}
+}
+
 func TestSum(t *testing.T) {
 	for _, vec := range testVectors.Cases {
 		in := testInput[:vec.InputLen]
