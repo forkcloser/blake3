@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand"
 	"os"
 	"testing"
 
@@ -227,6 +228,51 @@ func TestXOFSeek(t *testing.T) {
 		t.Fatal(err)
 	} else if !bytes.Equal(end, endGolden) {
 		t.Errorf("Seek(-%v, io.SeekEnd): expected %x..., got %x...", rem, endGolden[:8], end[:8])
+	}
+}
+
+func TestXOFReadPatterns(t *testing.T) {
+	// generate golden output, one block at a time
+	golden := make([]byte, 1<<20)
+	n := guts.CompressChunk(nil, &guts.IV, 0, 0)
+	n.Flags |= guts.FlagRoot
+	for i := 0; i < len(golden); i += guts.BlockSize {
+		block := guts.WordsToBytes(guts.CompressNode(n))
+		copy(golden[i:], block[:])
+		n.Counter++
+	}
+
+	// interleave reads of various sizes (crossing the buffered, direct, and
+	// parallel paths) with seeks, and confirm that the output always matches
+	// the golden stream
+	rng := rand.New(rand.NewSource(0))
+	xof := blake3.New(0, nil).XOF()
+	off := 0
+	for range 500 {
+		if rng.Intn(4) == 0 {
+			off = rng.Intn(len(golden) / 2)
+			xof.Seek(int64(off), io.SeekStart)
+		}
+		var readSize int
+		switch rng.Intn(4) {
+		case 0:
+			readSize = 1 + rng.Intn(64)
+		case 1:
+			readSize = 1 + rng.Intn(2048)
+		case 2:
+			readSize = 1 + rng.Intn(1<<15)
+		case 3:
+			readSize = 1 + rng.Intn(1<<19)
+		}
+		readSize = min(readSize, len(golden)-off)
+		buf := make([]byte, readSize)
+		if _, err := io.ReadFull(xof, buf); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(buf, golden[off:][:readSize]) {
+			t.Fatalf("read of %v bytes at offset %v did not match golden output", readSize, off)
+		}
+		off += readSize
 	}
 }
 

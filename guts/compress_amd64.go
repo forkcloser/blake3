@@ -108,6 +108,24 @@ func CompressBlocks(out *[MaxSIMD * BlockSize]byte, n Node) {
 	}
 }
 
+// CompressBlocksN compresses at least numBlocks copies of n with successive
+// counter values, storing the results in out and returning the number of
+// blocks computed, which may exceed numBlocks if doing so is cheap.
+func CompressBlocksN(out *[MaxSIMD * BlockSize]byte, n Node, numBlocks int) int {
+	if haveAVX512 || haveAVX2 {
+		// all MaxSIMD blocks are computed in (at most) two SIMD dispatches, so
+		// there is nothing to save by computing fewer
+		CompressBlocks(out, n)
+		return MaxSIMD
+	}
+	outs := (*[MaxSIMD][64]byte)(unsafe.Pointer(out))
+	for i := range numBlocks {
+		outs[i] = WordsToBytes(CompressNode(n))
+		n.Counter++
+	}
+	return numBlocks
+}
+
 func mergeSubtrees(cvs *[MaxSIMD][8]uint32, numCVs uint64, key *[8]uint32, flags uint32) Node {
 	if !haveAVX2 {
 		return mergeSubtreesGeneric(cvs, numCVs, key, flags)
