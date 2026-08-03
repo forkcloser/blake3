@@ -65,7 +65,7 @@ func TestBaoInterleaved(t *testing.T) {
 	data := make([]byte, 1<<20)
 	blake3.New(0, nil).XOF().Read(data)
 
-	for group := 0; group < 10; group++ {
+	for group := range 10 {
 		interleaved, root := bao.EncodeBuf(data, group, false)
 		if !bao.VerifyBuf(interleaved, nil, group, root) {
 			t.Fatal("verify failed")
@@ -101,7 +101,7 @@ func TestBaoOutboard(t *testing.T) {
 	data := make([]byte, 1<<20)
 	blake3.New(0, nil).XOF().Read(data)
 
-	for group := 0; group < 10; group++ {
+	for group := range 10 {
 		outboard, root := bao.EncodeBuf(data, group, true)
 		if !bao.VerifyBuf(data, outboard, group, root) {
 			t.Fatal("verify failed")

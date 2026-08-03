@@ -205,8 +205,8 @@ func TestReset(t *testing.T) {
 }
 
 func TestEigentrees(t *testing.T) {
-	for i := uint64(0); i < 64; i++ {
-		for j := uint64(0); j < 64; j++ {
+	for i := range uint64(64) {
+		for j := range uint64(64) {
 			trees := guts.Eigentrees(i, j)
 			x := i
 			for _, tree := range trees {
@@ -252,7 +252,7 @@ func BenchmarkXOF(b *testing.B) {
 			b.SetBytes(size)
 			buf := make([]byte, size)
 			xof := blake3.New(0, nil).XOF()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				xof.Seek(0, 0)
 				xof.Read(buf)
 			}
@@ -266,7 +266,7 @@ func BenchmarkSum256(b *testing.B) {
 			b.ReportAllocs()
 			b.SetBytes(size)
 			buf := make([]byte, size)
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				blake3.Sum256(buf)
 			}
 		})
