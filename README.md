@@ -1,11 +1,11 @@
 blake3
 ------
 
-[![GoDoc](https://godoc.org/lukechampine.com/blake3?status.svg)](https://godoc.org/lukechampine.com/blake3)
-[![Go Report Card](http://goreportcard.com/badge/lukechampine.com/blake3)](https://goreportcard.com/report/lukechampine.com/blake3)
+[![GoDoc](https://godoc.org/github.com/forkcloser/blake3?status.svg)](https://godoc.org/github.com/forkcloser/blake3)
+[![Go Report Card](http://goreportcard.com/badge/github.com/forkcloser/blake3)](https://goreportcard.com/report/github.com/forkcloser/blake3)
 
 ```
-go get lukechampine.com/blake3
+go get github.com/forkcloser/blake3
 ```
 
 `blake3` implements the [BLAKE3 cryptographic hash function](https://github.com/BLAKE3-team/BLAKE3).
