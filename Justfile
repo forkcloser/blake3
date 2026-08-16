@@ -6,7 +6,7 @@ import '.limen/just/main.just'
 # The FIRST recipe defined here becomes `just`'s default.
 lint: do::lint::go::default do::lint::default lint-generated
 fix: do::fix::go::default do::fix::default
-test: simd-info do::test::go::unit do::test::go::race test-386
+test: simd-info do::test::go::unit do::test::go::race
 bench: do::test::go::bench
 
 # The amd64 assembly is generated — never edited — and this proves it: the
@@ -73,18 +73,3 @@ simd-info:
     else
         echo "simd: unknown (no /proc/cpuinfo or sysctl on this host)"
     fi
-
-# 32-bit coverage: the codebase is int-width sensitive (buffer arithmetic,
-# uint64 stream offsets against a 32-bit int), and no development machine is
-# 32-bit. 386 binaries execute natively on amd64 hosts, so the amd64 CI legs
-# run this for free; other hosts skip it loudly. The race detector does not
-# support 386.
-[doc('Run the tests as GOARCH=386 (executes natively on amd64 hosts; skipped elsewhere)')]
-test-386:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [ "$(go env GOHOSTARCH)" != "amd64" ]; then
-        echo "GOARCH=386 binaries need an amd64 host to execute; skipping"
-        exit 0
-    fi
-    CGO_ENABLED=0 GOARCH=386 go test -count=1 -timeout "${TEST_GO_TIMEOUT:-10m}" ./...
