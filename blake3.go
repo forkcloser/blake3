@@ -81,27 +81,29 @@ func (h *Hasher) Write(p []byte) (int, error) {
 		}
 		eigenbuf := p[:len(p)-rem]
 		trees := guts.Eigentrees(h.counter, uint64(len(eigenbuf)/guts.ChunkSize))
-		cvs := make([][8]uint32, len(trees))
-		counter := h.counter
-		var wg sync.WaitGroup
-		for i, height := range trees {
-			buf := eigenbuf[:(1<<height)*guts.ChunkSize]
-			eigenbuf = eigenbuf[len(buf):]
-			if 1<<height < 4 {
-				// small tree; not worth spawning a goroutine
-				cvs[i] = guts.ChainingValue(guts.CompressEigentree(buf, &h.key, counter, h.flags))
-			} else {
-				wg.Add(1)
-				go func(i int, buf []byte, counter uint64) {
-					defer wg.Done()
-					cvs[i] = guts.ChainingValue(guts.CompressEigentree(buf, &h.key, counter, h.flags))
-				}(i, buf, counter)
+
+		// A Write's eigentrees form a cascade of independent subtrees: a
+		// 64 KiB write at counter 0 is [32,16,8,4,2,1] chunks (the last
+		// chunk is held back), a 1 MiB one is ten trees. What decides
+		// whether threads pay for themselves is the write's total size,
+		// not any one tree's: below minParallelWriteBytes it all runs
+		// inline, serially — no goroutines, no scratch, nothing for a
+		// closure to capture and drag onto the heap. Above it, the trees
+		// large enough to fan out internally each get a goroutine, and the
+		// tail of small trees — which together are nearly the size of the
+		// largest — go to one more, so they overlap the big ones instead of
+		// running serially after them. CVs are pushed in tree order once
+		// all are in, since the CV stack merges depend on that order.
+		if len(eigenbuf) < minParallelWriteBytes {
+			counter := h.counter
+			for _, height := range trees {
+				buf := eigenbuf[:(1<<height)*guts.ChunkSize]
+				eigenbuf = eigenbuf[len(buf):]
+				h.pushSubtree(guts.ChainingValue(guts.CompressEigentree(buf, &h.key, counter, h.flags)), height)
+				counter += 1 << height
 			}
-			counter += 1 << height
-		}
-		wg.Wait()
-		for i, height := range trees {
-			h.pushSubtree(cvs[i], height)
+		} else {
+			h.writeTreesParallel(eigenbuf, trees)
 		}
 		p = p[len(p)-rem:]
 	}
@@ -111,6 +113,75 @@ func (h *Hasher) Write(p []byte) (int, error) {
 	h.buflen += n
 
 	return lenp, nil
+}
+
+// minParallelWriteBytes is the smallest run of eigentree bytes compressed
+// concurrently. Measured on the generic (non-SIMD) path, darwin/arm64:
+// below it the thread wakeups cost more than they overlap (a 32 KiB write
+// was slower parallel than serial with a 16 KiB threshold), and above it
+// the cascade parallelizes well — 64 KiB writes are 1.7× the serial rate.
+// Note a "64 KiB" write is 63 KiB of trees (the last chunk is held back),
+// so a threshold at exactly 64 KiB would run it serially.
+const minParallelWriteBytes = 32 * 1024
+
+// writeTreesParallel compresses a Write's eigentrees concurrently: each tree
+// larger than MaxSIMD chunks gets a goroutine (it fans out further inside
+// CompressEigentree), and the run of small trees at the tail shares one.
+// Every CV is pushed in tree order once all are in. Kept out of Write so the
+// goroutine closure and its captures live only on this path.
+func (h *Hasher) writeTreesParallel(eigenbuf []byte, trees []int) {
+	cvs := make([][8]uint32, len(trees))
+	counter := h.counter
+	var wg sync.WaitGroup
+	// The small trees form a contiguous tail: Eigentrees climbs (heights
+	// increase while the counter is not yet aligned) then descends, and
+	// only the descent can hold trees below MaxSIMD chunks after a large
+	// one — but a climb of small trees precedes the first large one too.
+	// So small trees are grouped into runs wherever they sit, each run
+	// one goroutine, so no run of them ever executes on the caller.
+	runStart := -1
+	flushRun := func(end int, bufStart []byte, ctr uint64) {
+		wg.Add(1)
+		go func(lo, hi int, buf []byte, counter uint64) {
+			defer wg.Done()
+			for i := lo; i < hi; i++ {
+				height := trees[i]
+				n := (1 << height) * guts.ChunkSize
+				cvs[i] = guts.ChainingValue(guts.CompressEigentree(buf[:n], &h.key, counter, h.flags))
+				buf = buf[n:]
+				counter += 1 << height
+			}
+		}(runStart, end, bufStart, ctr)
+		runStart = -1
+	}
+	var runBuf []byte
+	var runCounter uint64
+	for i, height := range trees {
+		buf := eigenbuf[:(1<<height)*guts.ChunkSize]
+		if 1<<height <= guts.MaxSIMD {
+			if runStart < 0 {
+				runStart, runBuf, runCounter = i, eigenbuf, counter
+			}
+		} else {
+			if runStart >= 0 {
+				flushRun(i, runBuf, runCounter)
+			}
+			wg.Add(1)
+			go func(i int, buf []byte, counter uint64) {
+				defer wg.Done()
+				cvs[i] = guts.ChainingValue(guts.CompressEigentree(buf, &h.key, counter, h.flags))
+			}(i, buf, counter)
+		}
+		eigenbuf = eigenbuf[len(buf):]
+		counter += 1 << height
+	}
+	if runStart >= 0 {
+		flushRun(len(trees), runBuf, runCounter)
+	}
+	wg.Wait()
+	for i, height := range trees {
+		h.pushSubtree(cvs[i], height)
+	}
 }
 
 // Sum implements hash.Hash.
