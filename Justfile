@@ -4,7 +4,7 @@
 import '.limen/just/main.just'
 
 # The FIRST recipe defined here becomes `just`'s default.
-lint: do::lint::go::default do::lint::default lint-generated
+lint: do::lint::go::default do::lint::go::bce do::lint::go::escape do::lint::go::deadcode do::lint::default lint-generated
 fix: do::fix::go::default do::fix::default
 test: simd-info do::test::go::unit do::test::go::race
 bench: do::test::go::bench
