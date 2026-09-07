@@ -1,4 +1,21 @@
 // Package blake3 implements the BLAKE3 cryptographic hash function.
+//
+// [New] returns a [Hasher]: a [hash.Hash] with a caller-chosen digest size,
+// an optional 32-byte key, and an extendable output ([Hasher.XOF]). [Sum256]
+// and [Sum512] hash a byte slice in one call, and [DeriveKey] is BLAKE3's
+// key-derivation mode.
+//
+// A Hasher is not safe for concurrent use; its methods must not be called
+// from more than one goroutine at a time. It holds no pointers, so copying a
+// Hasher value forks its state: the copy and the original continue
+// independently. Write never fails (the error it returns to satisfy
+// [hash.Hash] is always nil), and Sum leaves the state untouched, so Sum may
+// be called repeatedly and interleaved with Write. Digests longer than 64
+// bytes are produced through the XOF.
+//
+// The subpackages are [github.com/forkcloser/blake3/bao], verified streaming
+// over BLAKE3's tree, and [github.com/forkcloser/blake3/guts], the tree-hashing
+// primitives both packages are built from.
 package blake3 // import "github.com/forkcloser/blake3"
 
 import (
@@ -11,11 +28,11 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/forkcloser/blake3/bao"
 	"github.com/forkcloser/blake3/guts"
 )
 
-// Hasher implements hash.Hash.
+// Hasher implements hash.Hash. See the package documentation for its
+// concurrency and copying rules.
 type Hasher struct {
 	key   [8]uint32
 	flags uint32
@@ -57,7 +74,7 @@ func (h *Hasher) rootNode() guts.Node {
 	return n
 }
 
-// Write implements hash.Hash.
+// Write implements hash.Hash. It always returns len(p), nil.
 func (h *Hasher) Write(p []byte) (int, error) {
 	lenp := len(p)
 
@@ -184,7 +201,9 @@ func (h *Hasher) writeTreesParallel(eigenbuf []byte, trees []int) {
 	}
 }
 
-// Sum implements hash.Hash.
+// Sum implements hash.Hash: it appends the current digest to b and returns
+// the resulting slice, without changing the underlying state. A digest longer
+// than 64 bytes is the first Size() bytes of the XOF stream.
 func (h *Hasher) Sum(b []byte) (sum []byte) {
 	// We need to append h.Size() bytes to b. Reuse b's capacity if possible;
 	// otherwise, allocate a new slice.
@@ -219,7 +238,8 @@ func (h *Hasher) BlockSize() int { return 64 }
 // Size implements hash.Hash.
 func (h *Hasher) Size() int { return h.size }
 
-// XOF returns an OutputReader initialized with the current hash state.
+// XOF returns an OutputReader initialized with the current hash state. The
+// state is captured at the call: later writes to h do not affect the reader.
 func (h *Hasher) XOF() *OutputReader {
 	return &OutputReader{
 		n: h.rootNode(),
@@ -316,8 +336,11 @@ func DeriveKey(subKey []byte, ctx string, srcKey []byte) {
 	h.XOF().Read(subKey)
 }
 
-// An OutputReader produces an seekable stream of 2^64 - 1 pseudorandom output
-// bytes.
+// An OutputReader produces a seekable stream of 2^64 - 1 pseudorandom output
+// bytes: the BLAKE3 extendable output of the state it was created from.
+//
+// Like a Hasher it is not safe for concurrent use, and it holds no pointers,
+// so a copy continues independently from the same position.
 type OutputReader struct {
 	n        guts.Node
 	buf      [guts.MaxSIMD * guts.BlockSize]byte
@@ -327,7 +350,9 @@ type OutputReader struct {
 }
 
 // Read implements io.Reader. Callers may assume that Read returns len(p), nil
-// unless the read would extend beyond the end of the stream.
+// unless the read would extend beyond the end of the stream, in which case it
+// returns the bytes that remain with a nil error; once the position is at the
+// end, Read returns 0, io.EOF.
 func (or *OutputReader) Read(p []byte) (int, error) {
 	if or.off == math.MaxUint64 {
 		return 0, io.EOF
@@ -390,7 +415,11 @@ func (or *OutputReader) Read(p []byte) (int, error) {
 	return lenp, nil
 }
 
-// Seek implements io.Seeker.
+// Seek implements io.Seeker. A position before the start of the stream or
+// past its end is rejected with an error and leaves the position unchanged;
+// io.SeekEnd with a zero offset positions at the last byte. Positions of
+// 2^63 and above are valid but cannot be represented in the int64 return
+// value, which is then negative.
 func (or *OutputReader) Seek(offset int64, whence int) (int64, error) {
 	off := or.off
 	switch whence {
@@ -420,49 +449,8 @@ func (or *OutputReader) Seek(offset int64, whence int) (int64, error) {
 	// NOTE: there is no need to update or invalidate the buffer: it caches an
 	// absolute range [bufStart, bufStart+buflen) of the stream, and Read only
 	// serves from it when or.off falls within that range.
-	//
-	// NOTE: or.off >= 2^63 will result in a negative return value.
-	// Nothing we can do about this.
 	return int64(or.off), nil
 }
 
 // ensure that Hasher implements hash.Hash
 var _ hash.Hash = (*Hasher)(nil)
-
-// BaoEncodedSize returns the size of a Bao encoding for the provided quantity
-// of data.
-//
-// Deprecated: Use bao.EncodedSize instead.
-func BaoEncodedSize(dataLen int, outboard bool) int {
-	return bao.EncodedSize(dataLen, 0, outboard)
-}
-
-// BaoEncode computes the intermediate BLAKE3 tree hashes of data and writes
-// them to dst.
-//
-// Deprecated: Use bao.Encode instead.
-func BaoEncode(dst io.WriterAt, data io.Reader, dataLen int64, outboard bool) ([32]byte, error) {
-	return bao.Encode(dst, data, dataLen, 0, outboard)
-}
-
-// BaoDecode reads content and tree data from the provided reader(s), and
-// streams the verified content to dst.
-//
-// Deprecated: Use bao.Decode instead.
-func BaoDecode(dst io.Writer, data, outboard io.Reader, root [32]byte) (bool, error) {
-	return bao.Decode(dst, data, outboard, 0, root)
-}
-
-// BaoEncodeBuf returns the Bao encoding and root (i.e. BLAKE3 hash) for data.
-//
-// Deprecated: Use bao.EncodeBuf instead.
-func BaoEncodeBuf(data []byte, outboard bool) ([]byte, [32]byte) {
-	return bao.EncodeBuf(data, 0, outboard)
-}
-
-// BaoVerifyBuf verifies the Bao encoding and root (i.e. BLAKE3 hash) for data.
-//
-// Deprecated: Use bao.VerifyBuf instead.
-func BaoVerifyBuf(data, outboard []byte, root [32]byte) bool {
-	return bao.VerifyBuf(data, outboard, 0, root)
-}

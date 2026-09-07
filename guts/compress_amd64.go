@@ -4,6 +4,10 @@ import (
 	"unsafe"
 )
 
+// simdReadsFullBuffer records that the SIMD kernels read the whole 16 KiB
+// buffer handed to CompressBuffer whatever buflen says; see CompressEigentree.
+const simdReadsFullBuffer = true
+
 //go:noescape
 func compressChunksAVX512(cvs *[16][8]uint32, buf *[16 * ChunkSize]byte, key *[8]uint32, counter uint64, flags uint32)
 
@@ -14,7 +18,7 @@ func compressChunksAVX2(cvs *[8][8]uint32, buf *[8 * ChunkSize]byte, key *[8]uin
 func compressBlocksAVX512(out *[1024]byte, block *[16]uint32, cv *[8]uint32, counter uint64, blockLen uint32, flags uint32)
 
 //go:noescape
-func compressBlocksAVX2(out *[512]byte, msgs *[16]uint32, cv *[8]uint32, counter uint64, blockLen uint32, flags uint32)
+func compressBlocksAVX2(out *[512]byte, block *[16]uint32, cv *[8]uint32, counter uint64, blockLen uint32, flags uint32)
 
 //go:noescape
 func compressParentsAVX2(parents *[8][8]uint32, cvs *[16][8]uint32, key *[8]uint32, flags uint32)
@@ -50,8 +54,11 @@ func compressBufferAVX2(buf *[MaxSIMD * ChunkSize]byte, buflen int, key *[8]uint
 	return mergeSubtrees(&cvs, numChunks, key, flags)
 }
 
-// CompressBuffer compresses up to MaxSIMD chunks in parallel and returns their
-// root node.
+// CompressBuffer compresses the first buflen bytes of buf, up to MaxSIMD
+// chunks, and returns their root node. buf must be a complete array the
+// caller owns: on amd64 the SIMD kernels read all of it regardless of buflen
+// (the surplus only feeds lanes whose results are discarded), so a shorter
+// slice reinterpreted as the array would be read past its length.
 func CompressBuffer(buf *[MaxSIMD * ChunkSize]byte, buflen int, key *[8]uint32, counter uint64, flags uint32) Node {
 	if buflen <= ChunkSize {
 		return CompressChunk(buf[:buflen], key, counter, flags)
@@ -124,6 +131,8 @@ func CompressBlocksN(out *[MaxSIMD * BlockSize]byte, n Node, numBlocks int) int 
 	return numBlocks
 }
 
+// mergeSubtrees merges the first numCVs chaining values in cvs into a single
+// parent node. It overwrites cvs in place as it goes.
 func mergeSubtrees(cvs *[MaxSIMD][8]uint32, numCVs uint64, key *[8]uint32, flags uint32) Node {
 	if !haveAVX2 {
 		return mergeSubtreesGeneric(cvs, numCVs, key, flags)
