@@ -51,7 +51,7 @@ is copied into a stack buffer before it reaches the SIMD kernels, which read a
 full 16 KiB: the bytes past the input's length are no longer touched.
 
 **Performance.** `Hasher.Write` schedules a large write's eigentrees by total
-size — serial below 32 KiB, concurrent above — and `CompressEigentree` deals
+size — serial below 24 KiB of trees, concurrent above — and `CompressEigentree` deals
 16 KiB groups out in NumCPU-capped runs, so a 1 MiB write no longer spawns 64
 goroutines. Small or unaligned XOF reads compress only the blocks they need
 (`guts.CompressBlocksN`); large reads run across CPUs above a threshold. Bao
