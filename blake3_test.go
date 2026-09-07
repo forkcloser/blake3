@@ -370,6 +370,10 @@ type nopReader struct{}
 
 func (nopReader) Read(p []byte) (int, error) { return len(p), nil }
 
+// The benchmarks keep upstream's loop shape (a plain b.N loop, not b.Loop)
+// so that their numbers compare one to one with lukechampine/blake3 v1.4.1 on
+// the same host: b.Loop costs ~2 ns per iteration, which read as a 4% "loss"
+// on the 73 ns Sum256/64 case until the harnesses were made identical.
 func BenchmarkWrite(b *testing.B) {
 	b.ReportAllocs()
 	b.SetBytes(1024)
@@ -383,7 +387,7 @@ func BenchmarkXOF(b *testing.B) {
 			b.SetBytes(size)
 			buf := make([]byte, size)
 			xof := blake3.New(0, nil).XOF()
-			for b.Loop() {
+			for i := 0; i < b.N; i++ {
 				xof.Seek(0, 0)
 				xof.Read(buf)
 			}
@@ -397,7 +401,7 @@ func BenchmarkSum256(b *testing.B) {
 			b.ReportAllocs()
 			b.SetBytes(size)
 			buf := make([]byte, size)
-			for b.Loop() {
+			for i := 0; i < b.N; i++ {
 				blake3.Sum256(buf)
 			}
 		})
