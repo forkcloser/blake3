@@ -1,5 +1,18 @@
 // Package guts provides a low-level interface to the BLAKE3 cryptographic hash
-// function.
+// function: the compression function, chunk and parent nodes, and the
+// tree-hashing helpers that packages blake3 and bao are built from. It is for
+// callers that hash their own trees; to hash data, use package blake3.
+//
+// This is the module's stable low-level surface. What every function computes
+// is fixed by the BLAKE3 specification and pinned by the official test
+// vectors, so the only kind of change expected here is additive. On amd64 the
+// AVX-512 and AVX2 kernels are selected at runtime from the CPU's features,
+// with the pure-Go code as the fallback everywhere; every path produces
+// identical results.
+//
+// Functions that take pointers read (and, where documented, write) through
+// them only for the duration of the call. Nothing here is safe for concurrent
+// use on shared mutable arguments.
 package guts
 
 import (
@@ -82,9 +95,16 @@ func CompressEigentree(buf []byte, key *[8]uint32, counter uint64, flags uint32)
 	case numChunks == 1:
 		return CompressChunk(buf, key, counter, flags)
 	case numChunks <= MaxSIMD:
-		if cap(buf) < MaxSIMD*ChunkSize {
-			// CompressBuffer requires a full-size buffer; copy into a
-			// stack-allocated one rather than growing buf on the heap
+		if len(buf) < MaxSIMD*ChunkSize && (simdReadsFullBuffer || cap(buf) < MaxSIMD*ChunkSize) {
+			// CompressBuffer takes a full-size array. A short tree could be
+			// served by reinterpreting buf's spare capacity as that array,
+			// but on amd64 the SIMD kernels read all 16 KiB of it, and the
+			// bytes past len(buf) are memory the caller never handed over —
+			// another goroutine may be writing them, a race no detector
+			// sees through assembly. So on those hosts a short tree is
+			// copied into a stack scratch buffer; the generic path reads
+			// only buflen and takes the reinterpretation when the capacity
+			// is there.
 			var tmp [MaxSIMD * ChunkSize]byte
 			return CompressBuffer(&tmp, copy(tmp[:], buf), key, counter, flags)
 		}
