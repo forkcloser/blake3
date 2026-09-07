@@ -1,6 +1,5 @@
-# This file is the project's own.
-# Add recipes leveraging provided `do` ready-made recipes, or create your own.
-# The import must be kept: it mounts every shared limen task under `just do ...`.
+# This file is the project's own — add recipes below. Keep the import: it
+# mounts every shared limen task under `just do ...`.
 import '.limen/just/main.just'
 
 # The FIRST recipe defined here becomes `just`'s default.
@@ -9,19 +8,14 @@ fix: do::fix::go::default do::fix::default
 test: simd-info do::test::go::unit do::test::go::race
 bench: do::test::go::bench
 
-# The amd64 assembly is generated — never edited — and this proves it: the
-# committed file must be the exact output of the pinned generator. avo is a
-# code-generation dependency of the generator alone, so it lives in its own
-# module (avo/go.mod, GOSUMDB-verified like any other) and never appears in
-# the main module's graph.
+# avo lives in its own module (avo/go.mod) so it never enters the main
+# module's graph — do not fold it into the root go.mod.
 [doc('Verify guts/compress_amd64.s is the exact output of avo/gen.go')]
 lint-generated:
     #!/usr/bin/env bash
     set -euo pipefail
     # avo embeds its -out argument in the generated header, so a byte-exact
     # comparison must regenerate with the exact command `just gen` runs.
-    # Snapshot and restore: the lint observes, never mutates (same doctrine as
-    # `do lint aqua`).
     tmp=$(mktemp "${TMPDIR:-/tmp}/blake3-avo.XXXXXX")
     # shellcheck disable=SC2329 # invoked via trap, not dead code
     restore() {
@@ -40,10 +34,8 @@ lint-generated:
 gen:
     go generate ./guts
 
-# The SIMD kernels are selected by runtime CPU detection, so which
-# implementation the suite just exercised is a property of the host. Say so in
-# the log: a green run on a runner without AVX-512 is not evidence about the
-# AVX-512 code. Diagnostic only — never fails.
+# A green run on a host without AVX-512 says nothing about the AVX-512
+# kernels; this names which paths ran. Diagnostic only — never fails.
 [doc('Report which BLAKE3 SIMD paths this host can exercise')]
 simd-info:
     #!/usr/bin/env bash
