@@ -62,6 +62,11 @@ TEXT ·compressBlocksAVX512(SB), NOSPLIT, $0-40
 	MOVQ out+0(FP), AX
 	MOVQ block+8(FP), CX
 	MOVQ cv+16(FP), DX
+	MOVQ counter+24(FP), BX
+	MOVQ BX, SI
+	SHRQ $0x20, SI
+	MOVL blockLen+32(FP), DI
+	MOVL flags+36(FP), R8
 
 	// Initialize block vectors
 	VPBROADCASTD (CX), Z1
@@ -94,13 +99,13 @@ TEXT ·compressBlocksAVX512(SB), NOSPLIT, $0-40
 	VPBROADCASTD iv<>+4(SB), Z18
 	VPBROADCASTD iv<>+8(SB), Z20
 	VPBROADCASTD iv<>+12(SB), Z22
-	VPBROADCASTD counter+24(FP), Z24
+	VPBROADCASTD BX, Z24
 	VPADDD       seq<>+0(SB), Z24, Z24
 	VPCMPUD      $0x01, seq<>+0(SB), Z24, K1
-	VPBROADCASTD counter+28(FP), Z26
+	VPBROADCASTD SI, Z26
 	VPADDD.BCST  seq<>+4(SB), Z26, K1, Z26
-	VPBROADCASTD blockLen+32(FP), Z28
-	VPBROADCASTD flags+36(FP), Z30
+	VPBROADCASTD DI, Z28
+	VPBROADCASTD R8, Z30
 
 	// Round 1
 	VPADDD Z0, Z8, Z0
@@ -959,18 +964,22 @@ TEXT ·compressChunksAVX512(SB), NOSPLIT, $192-36
 	MOVQ cvs+0(FP), AX
 	MOVQ buf+8(FP), CX
 	MOVQ key+16(FP), DX
+	MOVQ counter+24(FP), BX
+	MOVQ BX, SI
+	SHRQ $0x20, SI
+	MOVL flags+32(FP), DI
 
 	// Initialize counter
-	VPBROADCASTD counter+24(FP), Z0
+	VPBROADCASTD BX, Z0
 	VPADDD       seq<>+0(SB), Z0, Z0
 	VPCMPUD      $0x01, seq<>+0(SB), Z0, K1
-	VPBROADCASTD counter+28(FP), Z2
+	VPBROADCASTD SI, Z2
 	VPADDD.BCST  seq<>+4(SB), Z2, K1, Z2
 	VMOVDQU32    Z0, (SP)
 	VMOVDQU32    Z2, 64(SP)
 
 	// Initialize flags
-	VPBROADCASTD flags+32(FP), Z0
+	VPBROADCASTD DI, Z0
 	VMOVDQU32    Z0, 128(SP)
 	ORL          $0x01, 128(SP)
 	ORL          $0x02, 188(SP)
@@ -1877,6 +1886,8 @@ TEXT ·compressBlocksAVX2(SB), NOSPLIT, $544-40
 	MOVQ out+0(FP), AX
 	MOVQ block+8(FP), CX
 	MOVQ cv+16(FP), DX
+	MOVL blockLen+32(FP), BX
+	MOVL flags+36(FP), SI
 
 	// Load block
 	VPBROADCASTD (CX), Y0
@@ -1935,8 +1946,10 @@ TEXT ·compressBlocksAVX2(SB), NOSPLIT, $544-40
 	VPUNPCKHDQ   Y15, Y14, Y13
 	VPERMQ       $0xd8, Y12, Y12
 	VPERMQ       $0xd8, Y13, Y13
-	VPBROADCASTD blockLen+32(FP), Y14
-	VPBROADCASTD flags+36(FP), Y15
+	VMOVD        BX, X14
+	VPBROADCASTD X14, Y14
+	VMOVD        SI, X15
+	VPBROADCASTD X15, Y15
 	VMOVDQU      Y8, 512(SP)
 
 	// Round 1
@@ -3132,6 +3145,7 @@ TEXT ·compressChunksAVX2(SB), NOSPLIT, $672-36
 	MOVQ cvs+0(FP), AX
 	MOVQ buf+8(FP), CX
 	MOVQ key+16(FP), DX
+	MOVL flags+32(FP), BX
 
 	// Load key
 	VPBROADCASTD (DX), Y0
@@ -3158,7 +3172,8 @@ TEXT ·compressChunksAVX2(SB), NOSPLIT, $672-36
 	VMOVDQU      Y13, 544(SP)
 
 	// Initialize flags
-	VPBROADCASTD flags+32(FP), Y14
+	VMOVD        BX, X8
+	VPBROADCASTD X8, Y14
 	VMOVDQU      Y14, 576(SP)
 	VMOVDQU      Y14, 608(SP)
 	ORL          $0x01, 576(SP)
@@ -4369,6 +4384,7 @@ TEXT ·compressParentsAVX2(SB), NOSPLIT, $544-28
 	MOVQ parents+0(FP), AX
 	MOVQ cvs+8(FP), CX
 	MOVQ key+16(FP), DX
+	MOVL flags+24(FP), BX
 
 	// Load transposed block
 	VMOVDQU    seq<>+0(SB), Y9
@@ -4439,8 +4455,9 @@ TEXT ·compressParentsAVX2(SB), NOSPLIT, $544-28
 	VPXOR        Y13, Y13, Y13
 	VPBROADCASTD seq<>+4(SB), Y14
 	VPSLLD       $0x06, Y14, Y14
-	ORL          $0x04, flags+24(FP)
-	VPBROADCASTD flags+24(FP), Y15
+	ORL          $0x04, BX
+	VMOVD        BX, X15
+	VPBROADCASTD X15, Y15
 	VMOVDQU      Y8, 512(SP)
 
 	// Round 1

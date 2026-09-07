@@ -60,9 +60,9 @@ func genCompressBlocksAVX512() {
 	out := Mem{Base: Load(Param("out"), GP64())}
 	block := Mem{Base: Load(Param("block"), GP64())}
 	cv := Mem{Base: Load(Param("cv"), GP64())}
-	counter, _ := Param("counter").Resolve()
-	blockLen, _ := Param("blockLen").Resolve()
-	flags, _ := Param("flags").Resolve()
+	counterLo, counterHi := loadCounterHalves()
+	blockLen := Load(Param("blockLen"), GP32())
+	flags := Load(Param("flags"), GP32())
 
 	Comment("Initialize block vectors")
 	var vs, mv [16]VecVirtual
@@ -79,17 +79,17 @@ func genCompressBlocksAVX512() {
 		case 8, 9, 10, 11: // iv
 			VPBROADCASTD(globals.iv.Offset((i-8)*4), v)
 		case 12: // counter
-			VPBROADCASTD(counter.Addr, vs[12])
+			VPBROADCASTD(counterLo, vs[12])
 			VPADDD(globals.seq, vs[12], vs[12])
 			// set a 1 bit in K1 for each overflowed counter in vs[12]
 			VPCMPUD(Imm(1), globals.seq, vs[12], K1)
 			// add 1 to each counter in vs[13] for each 1 bit in K1
-			VPBROADCASTD(counter.Addr.Offset(1*4), vs[13])
+			VPBROADCASTD(counterHi, vs[13])
 			VPADDD_BCST(globals.seq.Offset(4), vs[13], K1, vs[13])
 		case 14: // blockLen
-			VPBROADCASTD(blockLen.Addr, v)
+			VPBROADCASTD(blockLen, v)
 		case 15: // flags
-			VPBROADCASTD(flags.Addr, v)
+			VPBROADCASTD(flags, v)
 		}
 	}
 
@@ -118,8 +118,8 @@ func genCompressChunksAVX512() {
 	cvs := Mem{Base: Load(Param("cvs"), GP64())}
 	buf := Mem{Base: Load(Param("buf"), GP64())}
 	key := Mem{Base: Load(Param("key"), GP64())}
-	counter, _ := Param("counter").Resolve()
-	flags, _ := Param("flags").Resolve()
+	ctrLo, ctrHi := loadCounterHalves()
+	flags := Load(Param("flags"), GP32())
 
 	var vs, mv [16]VecVirtual
 	for i := range vs {
@@ -129,17 +129,17 @@ func genCompressChunksAVX512() {
 	Comment("Initialize counter")
 	counterLo := AllocLocal(64)
 	counterHi := AllocLocal(64)
-	VPBROADCASTD(counter.Addr, vs[0])
+	VPBROADCASTD(ctrLo, vs[0])
 	VPADDD(globals.seq, vs[0], vs[0])
 	VPCMPUD(Imm(1), globals.seq, vs[0], K1)
-	VPBROADCASTD(counter.Addr.Offset(4), vs[1])
+	VPBROADCASTD(ctrHi, vs[1])
 	VPADDD_BCST(globals.seq.Offset(4), vs[1], K1, vs[1])
 	VMOVDQU32(vs[0], counterLo)
 	VMOVDQU32(vs[1], counterHi)
 
 	Comment("Initialize flags")
 	chunkFlags := AllocLocal(16 * 4)
-	VPBROADCASTD(flags.Addr, vs[0])
+	VPBROADCASTD(flags, vs[0])
 	VMOVDQU32(vs[0], chunkFlags)
 	ORL(Imm(1), chunkFlags.Offset(0*4))
 	ORL(Imm(2), chunkFlags.Offset(15*4))
@@ -241,8 +241,8 @@ func genCompressBlocksAVX2() {
 	block := Mem{Base: Load(Param("block"), GP64())}
 	cv := Mem{Base: Load(Param("cv"), GP64())}
 	counter, _ := Param("counter").Resolve()
-	blockLen, _ := Param("blockLen").Resolve()
-	flags, _ := Param("flags").Resolve()
+	blockLen := Load(Param("blockLen"), GP32())
+	flags := Load(Param("flags"), GP32())
 
 	var vs [16]VecVirtual
 	var mv [16]Mem
@@ -267,9 +267,9 @@ func genCompressBlocksAVX2() {
 		case 12: // counter
 			loadCounter(counter.Addr, vs[12:14], vs[14:16])
 		case 14: // blockLen
-			VPBROADCASTD(blockLen.Addr, v)
+			broadcastGP32AVX2(blockLen, v)
 		case 15: // flags
-			VPBROADCASTD(flags.Addr, v)
+			broadcastGP32AVX2(flags, v)
 		}
 	}
 
@@ -309,7 +309,7 @@ func genCompressChunksAVX2() {
 	buf := Mem{Base: Load(Param("buf"), GP64())}
 	key := Mem{Base: Load(Param("key"), GP64())}
 	counter, _ := Param("counter").Resolve()
-	flags, _ := Param("flags").Resolve()
+	flags := Load(Param("flags"), GP32())
 
 	var vs [16]VecVirtual
 	var mv [16]Mem
@@ -332,7 +332,7 @@ func genCompressChunksAVX2() {
 
 	Comment("Initialize flags")
 	chunkFlags := AllocLocal(16 * 4)
-	VPBROADCASTD(flags.Addr, vs[14])
+	broadcastGP32AVX2(flags, vs[14])
 	VMOVDQU(vs[14], chunkFlags.Offset(0*32))
 	VMOVDQU(vs[14], chunkFlags.Offset(1*32))
 	ORL(Imm(1), chunkFlags.Offset(0*4))
@@ -390,7 +390,7 @@ func genCompressParentsAVX2() {
 	parents := Mem{Base: Load(Param("parents"), GP64())}
 	cvs := Mem{Base: Load(Param("cvs"), GP64())}
 	key := Mem{Base: Load(Param("key"), GP64())}
-	flags, _ := Param("flags").Resolve()
+	flags := Load(Param("flags"), GP32())
 
 	var vs [16]VecVirtual
 	var mv [16]Mem
@@ -421,8 +421,8 @@ func genCompressParentsAVX2() {
 			VPBROADCASTD(globals.seq.Offset(1*4), v)
 			VPSLLD(Imm(6), v, v) // 64
 		case 15: // flags
-			ORL(Imm(4), flags.Addr) // flagParent
-			VPBROADCASTD(flags.Addr, v)
+			ORL(Imm(4), flags) // flagParent
+			broadcastGP32AVX2(flags, v)
 		}
 	}
 
@@ -502,6 +502,31 @@ func performRoundsAVX2(sv [16]VecVirtual, mv [16]Mem) {
 		}
 	}
 	VMOVDQU(spillMem, sv[8]) // reload
+}
+
+// loadCounterHalves loads the uint64 counter argument and returns its low and
+// high 32-bit halves in general-purpose registers, for broadcasting into the
+// AVX-512 counter lanes. The halves are read from a register rather than from
+// the stack slot: the assembler's vet pass (asmdecl) checks every FP-relative
+// access against the Go declaration, and a 4-byte read at counter+4 — or a
+// VPBROADCASTD straight from a 4-byte argument — is reported as a mismatch
+// even though it is well-formed. Register operands are not subject to that
+// check, so this keeps `go vet` clean on amd64.
+func loadCounterHalves() (lo, hi Register) {
+	counter := Load(Param("counter"), GP64())
+	high := GP64()
+	MOVQ(counter, high)
+	SHRQ(Imm(32), high)
+	return counter.(GPVirtual).As32(), high.As32()
+}
+
+// broadcastGP32AVX2 broadcasts a 32-bit general-purpose register into every
+// lane of dst using only VEX encodings: VPBROADCASTD from a GP register is an
+// EVEX (AVX-512) form, so the AVX2 kernels go through an xmm register.
+func broadcastGP32AVX2(src Register, dst VecVirtual) {
+	x := XMM()
+	VMOVD(src, x)
+	VPBROADCASTD(x, dst)
 }
 
 func loadCounter(counter Mem, dst, scratch []VecVirtual) {

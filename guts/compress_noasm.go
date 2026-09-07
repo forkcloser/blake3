@@ -6,8 +6,12 @@ import (
 	"encoding/binary"
 )
 
-// CompressBuffer compresses up to MaxSIMD chunks in parallel and returns their
-// root node.
+// simdReadsFullBuffer: the pure-Go CompressBuffer reads only buflen bytes; see
+// CompressEigentree.
+const simdReadsFullBuffer = false
+
+// CompressBuffer compresses the first buflen bytes of buf, up to MaxSIMD
+// chunks, and returns their root node.
 func CompressBuffer(buf *[MaxSIMD * ChunkSize]byte, buflen int, key *[8]uint32, counter uint64, flags uint32) Node {
 	return compressBufferGeneric(buf, buflen, key, counter, flags)
 }
@@ -59,6 +63,8 @@ func CompressBlocksN(out *[MaxSIMD * BlockSize]byte, n Node, numBlocks int) int 
 	return numBlocks
 }
 
+// mergeSubtrees merges the first numCVs chaining values in cvs into a single
+// parent node. It overwrites cvs in place as it goes.
 func mergeSubtrees(cvs *[MaxSIMD][8]uint32, numCVs uint64, key *[8]uint32, flags uint32) Node {
 	return mergeSubtreesGeneric(cvs, numCVs, key, flags)
 }
