@@ -78,24 +78,57 @@ policies.
 
 ## Benchmarks
 
-### Pure Go, this fork
+### This fork against upstream, same machine
 
-Measured 2026-09-06 with Go 1.26.5 on an Apple M5 Pro (darwin/arm64, so the
-generic implementation; no SIMD paths run on this host). `go test -bench .
--benchmem` reproduces them; `just bench` is the same thing through the
-pinned toolchain.
+Upstream `lukechampine/blake3` v1.4.1 (`dd9ffb9`, the fork point) and this
+fork, measured 2026-09-07 with Go 1.26.5 on an Apple M5 Pro (darwin/arm64,
+so the generic implementation; no SIMD paths run on this host). The two
+were run interleaved, three rounds of `go test -run '^$' -bench . -benchmem
+-count=2` each, and paired with `benchstat`; both use the same plain `b.N`
+loop, since `b.Loop` alone costs ~2 ns per iteration and shows up as a false
+4% on the 73 ns case. Lower is better; `~` means no statistically
+significant difference. Upstream's write-size rows were noisier (up to
+±51%) than the fork's (≤4%) in this run; the medians agree with two
+earlier runs.
 
-```
-BenchmarkWrite               1103 ns/op     928.44 MB/s     0 allocs/op
-BenchmarkXOF/64             3.346 ns/op   19124.59 MB/s     0 allocs/op
-BenchmarkXOF/1024           986.6 ns/op    1037.94 MB/s     0 allocs/op
-BenchmarkXOF/65536          36251 ns/op    1807.82 MB/s     9 allocs/op
-BenchmarkXOF/1048576       205346 ns/op    5106.39 MB/s    37 allocs/op
-BenchmarkSum256/64          74.79 ns/op     855.77 MB/s     0 allocs/op
-BenchmarkSum256/1024         1018 ns/op    1006.38 MB/s     0 allocs/op
-BenchmarkSum256/65536       39500 ns/op    1659.15 MB/s    18 allocs/op
-BenchmarkSum256/1048576    213718 ns/op    4906.36 MB/s   131 allocs/op
-```
+| Benchmark | upstream v1.4.1 | this fork | vs upstream |
+| --- | ---: | ---: | ---: |
+| `Write` (32 KiB via `io.CopyN`) | 912.0 ns | 809.7 ns | −11% |
+| `XOF/64` | 1009 ns | 3.1 ns | −99.7% |
+| `XOF/1024` | 1.004 µs | 1.006 µs | ~ |
+| `XOF/65536` | 37.84 µs | 36.10 µs | −4.6% |
+| `XOF/1048576` | 223.2 µs | 209.5 µs | −6.1% |
+| `Sum256/64` | 73.11 ns | 72.96 ns | ~ |
+| `Sum256/1024` | 1.034 µs | 1.030 µs | ~ |
+| `Sum256/65536` | 44.61 µs | 38.83 µs | −13% |
+| `Sum256/1048576` | 236.5 µs | 225.7 µs | −4.6% |
+| `WriteSizes/4096` | 9.47 µs | 4.70 µs | −50% |
+| `WriteSizes/8192` | 14.89 µs | 9.39 µs | −37% |
+| `WriteSizes/16384` | 20.27 µs | 18.21 µs | −10% |
+| `WriteSizes/24576` | 27.06 µs | 26.93 µs | ~ |
+| `WriteSizes/32768` | 29.84 µs | 25.88 µs | −13% |
+| `WriteSizes/49152` | 40.98 µs | 31.56 µs | −23% |
+| `WriteSizes/65536` | 42.73 µs | 38.37 µs | −10% |
+| `WriteSizes/131072` | 58.39 µs | 53.29 µs | −8.7% |
+| `WriteSizes/1048576` | 234.0 µs | 223.6 µs | −4.4% |
+
+Allocations per operation, where either side allocates at all:
+
+| Benchmark | upstream v1.4.1 | this fork |
+| --- | ---: | ---: |
+| `XOF/65536` | 58 | 9 |
+| `XOF/1048576` | 70 | 37 |
+| `Sum256/65536` | 30 | 20 |
+| `Sum256/1048576` | 171 | 133 |
+| `WriteSizes/4096` … `/24576` | 9 – 18 | 2 – 3 |
+| `WriteSizes/32768` … `/1048576` | 20 – 170 | 10 – 132 |
+
+The `XOF/64` row is the `OutputReader` fix: upstream recomputes the block on
+every `Seek(0)`+`Read`, this fork serves it from its window. `WriteSizes` is
+this fork's benchmark (`writesizes_bench_test.go`), added because
+`BenchmarkWrite` alone, at io.Copy's 32 KiB, hid a 27% regression at exactly
+that size in an earlier version of the write scheduler; the same file
+compiled against upstream produced the upstream column.
 
 ### Upstream's numbers (amd64, not re-measured here)
 
