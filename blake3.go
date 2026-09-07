@@ -132,18 +132,30 @@ func (h *Hasher) Write(p []byte) (int, error) {
 	return lenp, nil
 }
 
-// minParallelWriteBytes is the smallest run of eigentree bytes compressed
-// concurrently. Measured on the generic (non-SIMD) path, darwin/arm64:
-// below it the thread wakeups cost more than they overlap (a 32 KiB write
-// was slower parallel than serial with a 16 KiB threshold), and above it
-// the cascade parallelizes well — 64 KiB writes are 1.7× the serial rate.
-// Note a "64 KiB" write is 63 KiB of trees (the last chunk is held back),
-// so a threshold at exactly 64 KiB would run it serially.
-const minParallelWriteBytes = 32 * 1024
+// minParallelWriteBytes is the least eigentree payload in one Write worth
+// compressing concurrently. Measured on the generic (non-SIMD) path,
+// darwin/arm64, against upstream v1.4.1 on the same host (see
+// BenchmarkWriteSizes): below it the serial path wins — by ~45% over
+// upstream's goroutine-per-tree at 4 KiB writes, ~7% at 16 KiB — and from
+// 32 KiB up the scheduling in writeTreesParallel beats both upstream and
+// the serial path by 9–20%. Two things about the value:
+//
+//   - A "32 KiB" write — io.Copy's buffer, the common case — is 31 KiB of
+//     trees, the last chunk being held back. An earlier threshold of exactly
+//     32 KiB therefore ran it serially, 20% slower than upstream.
+//   - 16 KiB (one MaxSIMD-chunk tree) was tried and lost: a 24 KiB write is
+//     [16,4,2,1] chunks, and paying a goroutine for a 7-chunk tail made it
+//     13% slower than serial and far noisier. 24 KiB writes are the one
+//     size left ~4% behind upstream.
+const minParallelWriteBytes = 24 * 1024
 
 // writeTreesParallel compresses a Write's eigentrees concurrently: each tree
-// larger than MaxSIMD chunks gets a goroutine (it fans out further inside
-// CompressEigentree), and the run of small trees at the tail shares one.
+// of MaxSIMD chunks or more gets a goroutine (a MaxSIMD-chunk tree is ~10 µs
+// of work, worth a thread; larger ones fan out further inside
+// CompressEigentree), and each run of smaller trees shares one. Counting
+// the MaxSIMD-chunk tree as "small" was the earlier mistake: a 32 KiB write
+// is [16,8,4,2,1] chunks, all of which then went to a single goroutine —
+// the serial path plus a spawn.
 // Every CV is pushed in tree order once all are in. Kept out of Write so the
 // goroutine closure and its captures live only on this path.
 func (h *Hasher) writeTreesParallel(eigenbuf []byte, trees []int) {
@@ -175,7 +187,7 @@ func (h *Hasher) writeTreesParallel(eigenbuf []byte, trees []int) {
 	var runCounter uint64
 	for i, height := range trees {
 		buf := eigenbuf[:(1<<height)*guts.ChunkSize]
-		if 1<<height <= guts.MaxSIMD {
+		if 1<<height < guts.MaxSIMD {
 			if runStart < 0 {
 				runStart, runBuf, runCounter = i, eigenbuf, counter
 			}
