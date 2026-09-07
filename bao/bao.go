@@ -1,4 +1,12 @@
-// Package bao implements BLAKE3 verified streaming.
+// Package bao implements BLAKE3 verified streaming: encodings that carry the
+// hash tree alongside (or, "outboard", apart from) the data, so that any
+// prefix or slice of the data can be verified against the root hash as it is
+// read. See https://github.com/oconnor663/bao for the format.
+//
+// Every function takes a group parameter that sets the chunk-group size as a
+// power of two: a group is guts.ChunkSize << group bytes, and standard Bao
+// uses 0. The parameter is validated at every entry point; a group outside
+// [0, MaxGroup] panics with a message that says so.
 package bao
 
 import (
@@ -10,6 +18,20 @@ import (
 
 	"github.com/forkcloser/blake3/guts"
 )
+
+// MaxGroup is the largest group any function in this package accepts. It
+// is a 1 GiB chunk group, the largest whose size in bytes fits an int on
+// every platform.
+const MaxGroup = 20
+
+// checkGroup panics if group is outside [0, MaxGroup]. An out-of-range group
+// is a programming error, not a data error: left unchecked, the shifts and
+// allocations below fail with unrelated runtime panics.
+func checkGroup(group int) {
+	if group < 0 || group > MaxGroup {
+		panic("bao: group must be between 0 and MaxGroup")
+	}
+}
 
 func bytesToCV(b []byte) (cv [8]uint32) {
 	_ = b[31] // bounds check hint
@@ -63,8 +85,12 @@ func compressGroup(p []byte, counter uint64) guts.Node {
 }
 
 // EncodedSize returns the size of a Bao encoding for the provided quantity
-// of data.
+// of data. It panics if dataLen is negative.
 func EncodedSize(dataLen int, group int, outboard bool) int {
+	checkGroup(group)
+	if dataLen < 0 {
+		panic("bao: negative data length")
+	}
 	groupSize := guts.ChunkSize << group
 	size := 8
 	if dataLen > 0 {
@@ -85,8 +111,13 @@ func EncodedSize(dataLen int, group int, outboard bool) int {
 // per "group," as a power of 2; for standard Bao, use 0.
 //
 // Note that dst is not written sequentially, and therefore must be initialized
-// with sufficient capacity to hold the encoding; see EncodedSize.
+// with sufficient capacity to hold the encoding; see EncodedSize. A negative
+// dataLen is an error, reported before anything is written.
 func Encode(dst io.WriterAt, data io.Reader, dataLen int64, group int, outboard bool) ([32]byte, error) {
+	checkGroup(group)
+	if dataLen < 0 {
+		return [32]byte{}, errors.New("bao: negative data length")
+	}
 	groupSize := uint64(guts.ChunkSize << group)
 	buf := make([]byte, groupSize)
 	var err error
@@ -154,6 +185,7 @@ func Encode(dst io.WriterAt, data io.Reader, dataLen int64, group int, outboard 
 // unbuffered (e.g. os.File), wrapping them in a bufio.Reader will
 // significantly improve performance.
 func Decode(dst io.Writer, data, outboard io.Reader, group int, root [32]byte) (bool, error) {
+	checkGroup(group)
 	if outboard == nil {
 		outboard = data
 	}
@@ -215,6 +247,7 @@ func (b *bufferAt) WriteAt(p []byte, off int64) (int, error) {
 
 // EncodeBuf returns the Bao encoding and root (i.e. BLAKE3 hash) for data.
 func EncodeBuf(data []byte, group int, outboard bool) ([]byte, [32]byte) {
+	checkGroup(group)
 	buf := bufferAt{buf: make([]byte, EncodedSize(len(data), group, outboard))}
 	root, _ := Encode(&buf, bytes.NewReader(data), int64(len(data)), group, outboard)
 	return buf.buf, root
@@ -223,6 +256,7 @@ func EncodeBuf(data []byte, group int, outboard bool) ([]byte, [32]byte) {
 // VerifyBuf verifies the Bao encoding and root (i.e. BLAKE3 hash) for data.
 // If the content and tree data are interleaved, outboard should be nil.
 func VerifyBuf(data, outboard []byte, group int, root [32]byte) bool {
+	checkGroup(group)
 	d, o := bytes.NewBuffer(data), bytes.NewBuffer(outboard)
 	var or io.Reader = o
 	if outboard == nil {
@@ -236,6 +270,7 @@ func VerifyBuf(data, outboard []byte, group int, root [32]byte) bool {
 // extracting from an outboard encoding, data should contain only the chunk
 // groups that will be present in the slice.
 func ExtractSlice(dst io.Writer, data, outboard io.Reader, group int, offset uint64, length uint64) error {
+	checkGroup(group)
 	combinedEncoding := outboard == nil
 	if combinedEncoding {
 		outboard = data
@@ -284,6 +319,7 @@ func ExtractSlice(dst io.Writer, data, outboard io.Reader, group int, offset uin
 // unbuffered (e.g. os.File), wrapping it in a bufio.Reader will significantly
 // improve performance.
 func DecodeSlice(dst io.Writer, data io.Reader, group int, offset, length uint64, root [32]byte) (bool, error) {
+	checkGroup(group)
 	groupSize := uint64(guts.ChunkSize << group)
 	buf := make([]byte, groupSize)
 	var err error
@@ -354,6 +390,7 @@ func DecodeSlice(dst io.Writer, data io.Reader, group int, offset, length uint64
 // VerifySlice verifies the Bao slice encoding in data, returning the
 // verified bytes.
 func VerifySlice(data []byte, group int, offset uint64, length uint64, root [32]byte) ([]byte, bool) {
+	checkGroup(group)
 	d := bytes.NewBuffer(data)
 	var buf bytes.Buffer
 	if ok, _ := DecodeSlice(&buf, d, group, offset, length, root); !ok || d.Len() > 0 {
@@ -364,6 +401,7 @@ func VerifySlice(data []byte, group int, offset uint64, length uint64, root [32]
 
 // VerifyChunk verifies the provided chunks with a full outboard encoding.
 func VerifyChunk(chunks, outboard []byte, group int, offset uint64, root [32]byte) bool {
+	checkGroup(group)
 	cbuf := bytes.NewBuffer(chunks)
 	obuf := bytes.NewBuffer(outboard)
 	groupSize := uint64(guts.ChunkSize << group)

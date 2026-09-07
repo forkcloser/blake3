@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/forkcloser/blake3"
@@ -304,4 +305,69 @@ func TestBaoSlice(t *testing.T) {
 			}
 		}
 	}
+}
+
+// discardAt is an io.WriterAt that accepts every write, for probing Encode's
+// argument validation without a sized buffer getting in the way.
+type discardAt struct{}
+
+func (discardAt) WriteAt(p []byte, _ int64) (int, error) { return len(p), nil }
+
+func TestBaoGroupRange(t *testing.T) {
+	data := make([]byte, 3000)
+	enc, root := bao.EncodeBuf(data, 0, false)
+	obd, _ := bao.EncodeBuf(data, 0, true)
+
+	mustPanic := func(name string, f func()) {
+		t.Helper()
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Errorf("%s: no panic", name)
+				return
+			}
+			if msg, ok := r.(string); !ok || !strings.Contains(msg, "group") {
+				t.Errorf("%s: panicked with %v, want the named group message", name, r)
+			}
+		}()
+		f()
+	}
+	for _, group := range []int{-1, bao.MaxGroup + 1, math.MinInt, math.MaxInt} {
+		mustPanic("EncodedSize", func() { bao.EncodedSize(10, group, false) })
+		mustPanic("Encode", func() { bao.Encode(discardAt{}, bytes.NewReader(data), int64(len(data)), group, false) })
+		mustPanic("Decode", func() { bao.Decode(io.Discard, bytes.NewReader(enc), nil, group, root) })
+		mustPanic("EncodeBuf", func() { bao.EncodeBuf(data, group, false) })
+		mustPanic("VerifyBuf", func() { bao.VerifyBuf(enc, nil, group, root) })
+		mustPanic("ExtractSlice", func() { bao.ExtractSlice(io.Discard, bytes.NewReader(enc), nil, group, 0, 1) })
+		mustPanic("DecodeSlice", func() { bao.DecodeSlice(io.Discard, bytes.NewReader(enc), group, 0, 1, root) })
+		mustPanic("VerifySlice", func() { bao.VerifySlice(enc, group, 0, 1, root) })
+		mustPanic("VerifyChunk", func() { bao.VerifyChunk(data, obd, group, 0, root) })
+	}
+
+	// The bounds themselves are accepted. MaxGroup is only sized here: encoding
+	// at it would allocate a 1 GiB group buffer.
+	if got := bao.EncodedSize(10, bao.MaxGroup, true); got != 8 {
+		t.Errorf("EncodedSize at MaxGroup = %d, want 8", got)
+	}
+	if got := bao.EncodedSize(0, 0, true); got != 8 {
+		t.Errorf("EncodedSize(0, 0, true) = %d, want 8", got)
+	}
+}
+
+func TestBaoNegativeDataLen(t *testing.T) {
+	root, err := bao.Encode(discardAt{}, bytes.NewReader(nil), -1, 0, false)
+	if err == nil {
+		t.Fatal("Encode accepted a negative dataLen")
+	}
+	if root != [32]byte{} {
+		t.Errorf("Encode returned a root for a negative dataLen")
+	}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("EncodedSize accepted a negative dataLen")
+			}
+		}()
+		bao.EncodedSize(-1, 0, false)
+	}()
 }
