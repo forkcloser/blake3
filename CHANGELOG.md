@@ -8,7 +8,9 @@ v1.4.1 (commit `dd9ffb9`), which is also upstream's current `master`. For a
 user of `lukechampine.com/blake3`, switching is a change of import path plus
 the one removal listed below.
 
-## [1.0.0-rc.1] - 2026-09-07
+## [Unreleased]
+
+## [1.0.0] - 2026-09-13
 
 ### Fixed
 
@@ -57,6 +59,12 @@ the one removal listed below.
   became 3); buffered readers are recommended for decoding and documented.
 - Benchmarks use upstream's plain `b.N` loop so the numbers compare one to
   one; `BenchmarkWriteSizes` covers 4 KiB to 1 MiB writes.
+- Requires Go 1.26: the `go` directive is 1.26.0, raised with
+  `golang.org/x/sys` v0.48.0.
+- AVX2 and AVX-512 detection reads `golang.org/x/sys/cpu` instead of
+  `github.com/klauspost/cpuid/v2`, which leaves the dependency graph; `x/sys`
+  is the one direct dependency. Results are unchanged, and the darwin
+  AVX-512 fallback is now x/sys's own.
 
 ### Added
 
