@@ -308,13 +308,6 @@ func New(size int, key []byte) *Hasher {
 	return newHasher(keyWords, guts.FlagKeyedHash, size)
 }
 
-// sum512Size is Sum512's output: 512 bits.
-const sum512Size = 64
-
-// Sum256 and Sum512 always use the same hasher state, so we can save some time
-// when hashing small inputs by constructing the hasher ahead of time.
-var defaultHasher = New(sum512Size, nil)
-
 // Sum256 returns the unkeyed BLAKE3 hash of b, truncated to 256 bits.
 func Sum256(b []byte) (out [32]byte) {
 	out512 := Sum512(b)
@@ -342,7 +335,7 @@ func Sum512(b []byte) (out [64]byte) {
 		n = guts.CompressChunk(b, &guts.IV, 0, 0)
 		n.Flags |= guts.FlagRoot
 	default:
-		h := *defaultHasher
+		h := Hasher{key: guts.IV, size: len(out)}
 		h.Write(b)
 		n = h.rootNode()
 	}
