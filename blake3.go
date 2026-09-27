@@ -384,6 +384,10 @@ var (
 // large, block-aligned Read is split across CPUs.
 const minParallelReadBytes = 16 * 1024
 
+// outputBufSize is the output an OutputReader compresses at once: one block
+// per SIMD lane.
+const outputBufSize = guts.MaxSIMD * guts.BlockSize
+
 // An OutputReader produces a seekable stream of 2^64 - 1 pseudorandom output
 // bytes: the BLAKE3 extendable output of the state it was created from.
 //
@@ -391,7 +395,7 @@ const minParallelReadBytes = 16 * 1024
 // so a copy continues independently from the same position.
 type OutputReader struct {
 	n        guts.Node
-	buf      [guts.MaxSIMD * guts.BlockSize]byte
+	buf      [outputBufSize]byte
 	bufStart uint64 // stream offset of buf[0]
 	buflen   int    // number of valid bytes in buf
 	off      uint64
@@ -410,8 +414,6 @@ func (or *OutputReader) Read(p []byte) (int, error) {
 
 	lenp := len(p)
 
-	const bufsize = guts.MaxSIMD * guts.BlockSize
-
 	for len(p) > 0 {
 		// drain buffered output
 		// #nosec G115 -- buflen is a buffer's fill, never negative
@@ -423,54 +425,19 @@ func (or *OutputReader) Read(p []byte) (int, error) {
 			continue
 		}
 
-		if head := int(or.off % guts.BlockSize); head != 0 || len(p) < bufsize {
+		if head := int(or.off % guts.BlockSize); head != 0 || len(p) < outputBufSize {
 			// the read is small or unaligned; compress (only) as many blocks
 			// as necessary into our buffer, and serve it from there
 			or.bufStart = or.off - uint64(head)
 			or.n.Counter = or.bufStart / guts.BlockSize
-			need := min(head+len(p), bufsize)
+			need := min(head+len(p), outputBufSize)
 			numBlocks := (need + guts.BlockSize - 1) / guts.BlockSize
 			or.buflen = guts.BlockSize * guts.CompressBlocksN(&or.buf, or.n, numBlocks)
 
 			continue
 		}
 		// the read is large and block-aligned; compress directly into p
-		or.n.Counter = or.off / guts.BlockSize
-		numBufs := len(p) / bufsize
-
-		const minBufsPerCPU = minParallelReadBytes / bufsize
-		if par := min(numBufs/minBufsPerCPU, runtime.NumCPU()); par > 1 {
-			// enough work for each CPU to be worth parallelizing; distribute
-			// the buffers evenly among the goroutines
-			var wg sync.WaitGroup
-
-			for i := range par {
-				bufs := uint64(numBufs / par) // #nosec G115 -- a quotient of two positive counts
-				if i < numBufs%par {
-					bufs++
-				}
-
-				wg.Add(1)
-				go func(p []byte, n guts.Node, bufs uint64) {
-					defer wg.Done()
-
-					for i := range bufs {
-						guts.CompressBlocks((*[bufsize]byte)(p[i*bufsize:]), n)
-						n.Counter += bufsize / guts.BlockSize
-					}
-				}(p, or.n, bufs)
-
-				p = p[bufs*bufsize:]
-				or.off += bufs * bufsize
-				or.n.Counter = or.off / guts.BlockSize
-			}
-
-			wg.Wait()
-		} else {
-			guts.CompressBlocks((*[bufsize]byte)(p), or.n)
-			p = p[bufsize:]
-			or.off += bufsize
-		}
+		p = or.readAligned(p)
 	}
 
 	return lenp, nil
@@ -520,6 +487,52 @@ func (or *OutputReader) Seek(offset int64, whence int) (int64, error) {
 	// #nosec G115 -- positions past 2^63 - 1, reachable only through SeekEnd,
 	// do not fit io.Seeker's int64 and come back negative; the seek is exact.
 	return int64(or.off), nil
+}
+
+// readAligned compresses output straight into p, which starts on a block
+// boundary of the stream and holds at least outputBufSize bytes, and returns
+// what is left of p.
+func (or *OutputReader) readAligned(p []byte) []byte {
+	or.n.Counter = or.off / guts.BlockSize
+	numBufs := len(p) / outputBufSize
+
+	const minBufsPerCPU = minParallelReadBytes / outputBufSize
+
+	par := min(numBufs/minBufsPerCPU, runtime.NumCPU())
+	if par <= 1 {
+		guts.CompressBlocks((*[outputBufSize]byte)(p), or.n)
+		or.off += outputBufSize
+
+		return p[outputBufSize:]
+	}
+	// enough work for each CPU to be worth parallelizing; distribute
+	// the buffers evenly among the goroutines
+	var wg sync.WaitGroup
+
+	for i := range par {
+		bufs := uint64(numBufs / par) // #nosec G115 -- a quotient of two positive counts
+		if i < numBufs%par {
+			bufs++
+		}
+
+		wg.Add(1)
+		go func(p []byte, n guts.Node, bufs uint64) {
+			defer wg.Done()
+
+			for i := range bufs {
+				guts.CompressBlocks((*[outputBufSize]byte)(p[i*outputBufSize:]), n)
+				n.Counter += outputBufSize / guts.BlockSize
+			}
+		}(p, or.n, bufs)
+
+		p = p[bufs*outputBufSize:]
+		or.off += bufs * outputBufSize
+		or.n.Counter = or.off / guts.BlockSize
+	}
+
+	wg.Wait()
+
+	return p
 }
 
 // Hasher is a hash.Hash.
