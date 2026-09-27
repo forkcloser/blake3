@@ -380,6 +380,12 @@ func DeriveKey(subKey []byte, ctx string, srcKey []byte) {
 	h.XOF().Read(subKey)
 }
 
+// The errors Seek returns for a position outside the stream.
+var (
+	errSeekNegative = errors.New("seek position cannot be negative")
+	errSeekPastEnd  = errors.New("seek position cannot exceed end of stream")
+)
+
 // An OutputReader produces a seekable stream of 2^64 - 1 pseudorandom output
 // bytes: the BLAKE3 extendable output of the state it was created from.
 //
@@ -482,23 +488,23 @@ func (or *OutputReader) Seek(offset int64, whence int) (int64, error) {
 	switch whence {
 	case io.SeekStart:
 		if offset < 0 {
-			return 0, errors.New("seek position cannot be negative")
+			return 0, errSeekNegative
 		}
 
 		off = uint64(offset)
 	case io.SeekCurrent:
 		if offset < 0 {
 			if uint64(-offset) > off {
-				return 0, errors.New("seek position cannot be negative")
+				return 0, errSeekNegative
 			}
 
 			off -= uint64(-offset)
 		} else if off += uint64(offset); off < uint64(offset) {
-			return 0, errors.New("seek position cannot exceed end of stream")
+			return 0, errSeekPastEnd
 		}
 	case io.SeekEnd:
 		if offset > 0 {
-			return 0, errors.New("seek position cannot exceed end of stream")
+			return 0, errSeekPastEnd
 		}
 
 		off = uint64(offset) - 1
