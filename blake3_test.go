@@ -18,42 +18,57 @@ import (
 
 func toHex(data []byte) string { return hex.EncodeToString(data) }
 
-var testVectors = func() (vecs struct {
-	Key   string
-	Cases []struct {
-		InputLen  int    `json:"input_len"`
-		Hash      string `json:"hash"`
-		KeyedHash string `json:"keyed_hash"`
-		DeriveKey string `json:"derive_key"`
-	}
-},
-) {
+// vectors is testdata/vectors.json, the reference implementation's test
+// vectors.
+type vectors struct {
+	Key   string       `json:"key"`
+	Cases []vectorCase `json:"cases"`
+}
+
+// vectorCase is one reference vector, for the first InputLen bytes of
+// testInput.
+//
+//nolint:tagliatelle // the reference file's field names
+type vectorCase struct {
+	InputLen  int    `json:"input_len"`
+	Hash      string `json:"hash"`
+	KeyedHash string `json:"keyed_hash"`
+	DeriveKey string `json:"derive_key"`
+}
+
+func loadVectors(t *testing.T) vectors {
+	t.Helper()
+
 	data, err := os.ReadFile("testdata/vectors.json")
 	if err != nil {
-		panic(err)
+		t.Fatal(err)
 	}
 
+	var vecs vectors
 	if err := json.Unmarshal(data, &vecs); err != nil {
-		panic(err)
+		t.Fatal(err)
 	}
 
 	return vecs
-}()
+}
 
-var testInput = func() []byte {
-	input := make([]byte, 1e6)
+// testInput is the input the reference vectors hash: n bytes counting from 0
+// to 250 and around again.
+func testInput(n int) []byte {
+	input := make([]byte, n)
 	for i := range input {
 		input[i] = byte(i % 251)
 	}
 
 	return input
-}()
+}
 
 func TestVectors(t *testing.T) {
 	t.Parallel()
 
-	for _, vec := range testVectors.Cases {
-		in := testInput[:vec.InputLen]
+	vecs := loadVectors(t)
+	for _, vec := range vecs.Cases {
+		in := testInput(vec.InputLen)
 
 		// regular
 		h := blake3.New(len(vec.Hash)/2, nil)
@@ -64,7 +79,7 @@ func TestVectors(t *testing.T) {
 		}
 
 		// keyed
-		h = blake3.New(len(vec.KeyedHash)/2, []byte(testVectors.Key))
+		h = blake3.New(len(vec.KeyedHash)/2, []byte(vecs.Key))
 		h.Write(in)
 
 		if out := toHex(h.Sum(nil)); out != vec.KeyedHash {
@@ -94,8 +109,9 @@ func TestVectors(t *testing.T) {
 func TestXOF(t *testing.T) {
 	t.Parallel()
 
-	for _, vec := range testVectors.Cases {
-		in := testInput[:vec.InputLen]
+	vecs := loadVectors(t)
+	for _, vec := range vecs.Cases {
+		in := testInput(vec.InputLen)
 
 		// XOF should produce same output as Sum, even when outputting 7 bytes at a time.
 		// Read well past the digest length, so that the seek tests below stay
@@ -400,8 +416,9 @@ func TestNewValidation(t *testing.T) {
 func TestSum(t *testing.T) {
 	t.Parallel()
 
-	for _, vec := range testVectors.Cases {
-		in := testInput[:vec.InputLen]
+	vecs := loadVectors(t)
+	for _, vec := range vecs.Cases {
+		in := testInput(vec.InputLen)
 
 		var exp256 [32]byte
 
@@ -436,8 +453,9 @@ func TestSum(t *testing.T) {
 func TestReset(t *testing.T) {
 	t.Parallel()
 
-	for _, vec := range testVectors.Cases {
-		in := testInput[:vec.InputLen]
+	vecs := loadVectors(t)
+	for _, vec := range vecs.Cases {
+		in := testInput(vec.InputLen)
 
 		h := blake3.New(32, nil)
 		h.Write(in)
