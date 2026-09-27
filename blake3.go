@@ -311,9 +311,12 @@ func New(size int, key []byte) *Hasher {
 	return newHasher(keyWords, guts.FlagKeyedHash, size)
 }
 
+// sum512Size is Sum512's output: 512 bits.
+const sum512Size = 64
+
 // Sum256 and Sum512 always use the same hasher state, so we can save some time
 // when hashing small inputs by constructing the hasher ahead of time.
-var defaultHasher = New(64, nil)
+var defaultHasher = New(sum512Size, nil)
 
 // Sum256 returns the unkeyed BLAKE3 hash of b, truncated to 256 bits.
 func Sum256(b []byte) (out [32]byte) {
@@ -386,6 +389,10 @@ var (
 	errSeekPastEnd  = errors.New("seek position cannot exceed end of stream")
 )
 
+// minParallelReadBytes is the least output one goroutine is handed when a
+// large, block-aligned Read is split across CPUs.
+const minParallelReadBytes = 16 * 1024
+
 // An OutputReader produces a seekable stream of 2^64 - 1 pseudorandom output
 // bytes: the BLAKE3 extendable output of the state it was created from.
 //
@@ -439,7 +446,7 @@ func (or *OutputReader) Read(p []byte) (int, error) {
 		or.n.Counter = or.off / guts.BlockSize
 		numBufs := len(p) / bufsize
 
-		const minBufsPerCPU = (16 * 1024) / bufsize
+		const minBufsPerCPU = minParallelReadBytes / bufsize
 		if par := min(numBufs/minBufsPerCPU, runtime.NumCPU()); par > 1 {
 			// enough work for each CPU to be worth parallelizing; distribute
 			// the buffers evenly among the goroutines
