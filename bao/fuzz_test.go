@@ -20,9 +20,7 @@ import (
 // two group sizes, so the engine starts from inputs that reach the leaves and
 // mutates from there.
 func FuzzDecoders(f *testing.F) {
-	seedData := make([]byte, 5*1024+17)
-	blake3.New(0, nil).XOF().Read(seedData)
-
+	seedData := xofBytes(f, 5*1024+17)
 	for _, group := range []int{0, 2} {
 		combined, _ := bao.EncodeBuf(seedData, group, false)
 		outboard, _ := bao.EncodeBuf(seedData, group, true)
@@ -38,15 +36,15 @@ func FuzzDecoders(f *testing.F) {
 		g := int(group % 7)
 		root := blake3.Sum256(data)
 
-		bao.Decode(io.Discard, bytes.NewReader(enc), nil, g, root)
-		bao.Decode(io.Discard, bytes.NewReader(data), bytes.NewReader(enc), g, root)
+		_, _ = bao.Decode(io.Discard, bytes.NewReader(enc), nil, g, root)
+		_, _ = bao.Decode(io.Discard, bytes.NewReader(data), bytes.NewReader(enc), g, root)
 		bao.VerifyBuf(enc, nil, g, root)
 		bao.VerifyBuf(data, enc, g, root)
-		bao.DecodeSlice(io.Discard, bytes.NewReader(enc), g, offset, length, root)
+		_, _ = bao.DecodeSlice(io.Discard, bytes.NewReader(enc), g, offset, length, root)
 		bao.VerifySlice(enc, g, offset, length, root)
 		bao.VerifyChunk(data, enc, g, offset, root)
-		bao.ExtractSlice(io.Discard, bytes.NewReader(enc), nil, g, offset, length)
-		bao.ExtractSlice(io.Discard, bytes.NewReader(data), bytes.NewReader(enc), g, offset, length)
+		_ = bao.ExtractSlice(io.Discard, bytes.NewReader(enc), nil, g, offset, length)
+		_ = bao.ExtractSlice(io.Discard, bytes.NewReader(data), bytes.NewReader(enc), g, offset, length)
 
 		// A combined encoding that verifies must decode to exactly the data
 		// whose root it was checked against: the decoder's acceptance is the

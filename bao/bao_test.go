@@ -73,8 +73,7 @@ func TestBaoGolden(t *testing.T) {
 func TestBaoInterleaved(t *testing.T) {
 	t.Parallel()
 
-	data := make([]byte, 1<<20)
-	blake3.New(0, nil).XOF().Read(data)
+	data := xofBytes(t, 1<<20)
 
 	for group := range 10 {
 		interleaved, root := bao.EncodeBuf(data, group, false)
@@ -120,8 +119,7 @@ func TestBaoInterleaved(t *testing.T) {
 func TestBaoOutboard(t *testing.T) {
 	t.Parallel()
 
-	data := make([]byte, 1<<20)
-	blake3.New(0, nil).XOF().Read(data)
+	data := xofBytes(t, 1<<20)
 
 	for group := range 10 {
 		outboard, root := bao.EncodeBuf(data, group, true)
@@ -199,8 +197,7 @@ func TestBaoChunkGroup(t *testing.T) {
 func TestBaoVerifyChunk(t *testing.T) {
 	t.Parallel()
 
-	data := make([]byte, 1<<18)
-	blake3.New(0, nil).XOF().Read(data)
+	data := xofBytes(t, 1<<18)
 
 	for _, group := range []int{0, 4} {
 		groupSize := 1024 << group
@@ -245,8 +242,7 @@ func TestBaoVerifyChunk(t *testing.T) {
 func TestBaoInvalidSliceBounds(t *testing.T) {
 	t.Parallel()
 
-	data := make([]byte, 4096)
-	blake3.New(0, nil).XOF().Read(data)
+	data := xofBytes(t, 4096)
 	enc, root := bao.EncodeBuf(data, 0, false)
 
 	for _, test := range []struct {
@@ -274,8 +270,7 @@ func TestBaoInvalidSliceBounds(t *testing.T) {
 func TestBaoStreaming(t *testing.T) {
 	t.Parallel()
 
-	data := make([]byte, 1<<20)
-	blake3.New(0, nil).XOF().Read(data)
+	data := xofBytes(t, 1<<20)
 
 	enc, root := bao.EncodeBuf(data, 0, false)
 	if root != blake3.Sum256(data) {
@@ -316,8 +311,7 @@ func TestBaoStreaming(t *testing.T) {
 func TestBaoSlice(t *testing.T) {
 	t.Parallel()
 
-	data := make([]byte, 1<<20)
-	blake3.New(0, nil).XOF().Read(data)
+	data := xofBytes(t, 1<<20)
 
 	for _, test := range []struct {
 		off, len uint64
@@ -411,12 +405,12 @@ func TestBaoGroupRange(t *testing.T) {
 	}
 	for _, group := range []int{-1, bao.MaxGroup + 1, math.MinInt, math.MaxInt} {
 		mustPanic("EncodedSize", func() { bao.EncodedSize(10, group, false) })
-		mustPanic("Encode", func() { bao.Encode(discardAt{}, bytes.NewReader(data), int64(len(data)), group, false) })
-		mustPanic("Decode", func() { bao.Decode(io.Discard, bytes.NewReader(enc), nil, group, root) })
+		mustPanic("Encode", func() { _, _ = bao.Encode(discardAt{}, bytes.NewReader(data), int64(len(data)), group, false) })
+		mustPanic("Decode", func() { _, _ = bao.Decode(io.Discard, bytes.NewReader(enc), nil, group, root) })
 		mustPanic("EncodeBuf", func() { bao.EncodeBuf(data, group, false) })
 		mustPanic("VerifyBuf", func() { bao.VerifyBuf(enc, nil, group, root) })
-		mustPanic("ExtractSlice", func() { bao.ExtractSlice(io.Discard, bytes.NewReader(enc), nil, group, 0, 1) })
-		mustPanic("DecodeSlice", func() { bao.DecodeSlice(io.Discard, bytes.NewReader(enc), group, 0, 1, root) })
+		mustPanic("ExtractSlice", func() { _ = bao.ExtractSlice(io.Discard, bytes.NewReader(enc), nil, group, 0, 1) })
+		mustPanic("DecodeSlice", func() { _, _ = bao.DecodeSlice(io.Discard, bytes.NewReader(enc), group, 0, 1, root) })
 		mustPanic("VerifySlice", func() { bao.VerifySlice(enc, group, 0, 1, root) })
 		mustPanic("VerifyChunk", func() { bao.VerifyChunk(data, obd, group, 0, root) })
 	}
@@ -453,4 +447,16 @@ func TestBaoNegativeDataLen(t *testing.T) {
 
 		bao.EncodedSize(-1, 0, false)
 	}()
+}
+
+// xofBytes returns n bytes of BLAKE3 output, the data these tests encode.
+func xofBytes(tb testing.TB, n int) []byte {
+	tb.Helper()
+
+	data := make([]byte, n)
+	if _, err := blake3.New(0, nil).XOF().Read(data); err != nil {
+		tb.Fatal(err)
+	}
+
+	return data
 }
