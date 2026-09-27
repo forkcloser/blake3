@@ -115,72 +115,82 @@ func CompressEigentree(buf []byte, key *[8]uint32, counter uint64, flags uint32)
 
 		return CompressBuffer((*[MaxSIMD * ChunkSize]byte)(buf[:MaxSIMD*ChunkSize]), len(buf), key, counter, flags)
 	default:
-		// One CV per MaxSIMD-chunk group; the merge below is defined over
-		// these, so they are computed identically however the work is
-		// spread. Spreading it one group per goroutine was the mistake:
-		// a group is ~10 µs of work, and waking a thread for it costs
-		// more than that (a 64 KiB tree spent ~95% of its time in the
-		// scheduler). Give each goroutine a run of groups worth at least
-		// minParallelBytes, and run the whole tree on the caller when it
-		// does not split at least two ways.
-		groups := numChunks / MaxSIMD
-		cvs := make([][8]uint32, groups)
-		compressGroups := func(lo, hi uint64) {
-			for i := lo; i < hi; i++ {
-				cvs[i] = ChainingValue(
-					CompressBuffer(
-						(*[MaxSIMD * ChunkSize]byte)(buf[i*MaxSIMD*ChunkSize:]),
-						MaxSIMD*ChunkSize,
-						key,
-						counter+(MaxSIMD*i),
-						flags,
-					),
-				)
-			}
-		}
-
-		const groupsPerGoroutine = minParallelBytes / (MaxSIMD * ChunkSize)
-		// #nosec G115 -- NumCPU is a small positive count
-		if par := min(groups/groupsPerGoroutine, uint64(runtime.NumCPU())); par > 1 {
-			// Deal groups out in par near-equal contiguous runs; the
-			// remainder folds into the runs rather than a second spawn.
-			per, extra := groups/par, groups%par
-
-			var wg sync.WaitGroup
-
-			for w, lo := uint64(0), uint64(0); w < par; w++ {
-				hi := lo + per
-				if w < extra {
-					hi++
-				}
-
-				wg.Add(1)
-				go func(lo, hi uint64) {
-					defer wg.Done()
-
-					compressGroups(lo, hi)
-				}(lo, hi)
-
-				lo = hi
-			}
-
-			wg.Wait()
-		} else {
-			compressGroups(0, groups)
-		}
-
-		var rec func(cvs [][8]uint32) Node
-
-		rec = func(cvs [][8]uint32) Node {
-			if len(cvs) == 2 {
-				return ParentNode(cvs[0], cvs[1], key, flags)
-			} else if len(cvs) == MaxSIMD {
-				return mergeSubtrees((*[MaxSIMD][8]uint32)(cvs), MaxSIMD, key, flags)
-			}
-
-			return ParentNode(ChainingValue(rec(cvs[:len(cvs)/2])), ChainingValue(rec(cvs[len(cvs)/2:])), key, flags)
-		}
-
-		return rec(cvs)
+		return compressGroups(buf, key, counter, flags, numChunks/MaxSIMD)
 	}
+}
+
+// compressGroups compresses an eigentree of more than MaxSIMD chunks, in
+// groups of MaxSIMD, and returns its root node.
+func compressGroups(buf []byte, key *[8]uint32, counter uint64, flags uint32, groups uint64) Node {
+	// One CV per MaxSIMD-chunk group; the merge below is defined over
+	// these, so they are computed identically however the work is
+	// spread. Spreading it one group per goroutine was the mistake:
+	// a group is ~10 µs of work, and waking a thread for it costs
+	// more than that (a 64 KiB tree spent ~95% of its time in the
+	// scheduler). Give each goroutine a run of groups worth at least
+	// minParallelBytes, and run the whole tree on the caller when it
+	// does not split at least two ways.
+	cvs := make([][8]uint32, groups)
+	compressRun := func(lo, hi uint64) {
+		for i := lo; i < hi; i++ {
+			cvs[i] = ChainingValue(
+				CompressBuffer(
+					(*[MaxSIMD * ChunkSize]byte)(buf[i*MaxSIMD*ChunkSize:]),
+					MaxSIMD*ChunkSize,
+					key,
+					counter+(MaxSIMD*i),
+					flags,
+				),
+			)
+		}
+	}
+
+	const groupsPerGoroutine = minParallelBytes / (MaxSIMD * ChunkSize)
+	// #nosec G115 -- NumCPU is a small positive count
+	if par := min(groups/groupsPerGoroutine, uint64(runtime.NumCPU())); par > 1 {
+		// Deal groups out in par near-equal contiguous runs; the
+		// remainder folds into the runs rather than a second spawn.
+		per, extra := groups/par, groups%par
+
+		var wg sync.WaitGroup
+
+		for w, lo := uint64(0), uint64(0); w < par; w++ {
+			hi := lo + per
+			if w < extra {
+				hi++
+			}
+
+			wg.Add(1)
+			go func(lo, hi uint64) {
+				defer wg.Done()
+
+				compressRun(lo, hi)
+			}(lo, hi)
+
+			lo = hi
+		}
+
+		wg.Wait()
+	} else {
+		compressRun(0, groups)
+	}
+
+	return mergeGroups(cvs, key, flags)
+}
+
+// mergeGroups merges the chaining values of a power-of-two number of
+// MaxSIMD-chunk groups into their root node.
+func mergeGroups(cvs [][8]uint32, key *[8]uint32, flags uint32) Node {
+	if len(cvs) == 2 {
+		return ParentNode(cvs[0], cvs[1], key, flags)
+	} else if len(cvs) == MaxSIMD {
+		return mergeSubtrees((*[MaxSIMD][8]uint32)(cvs), MaxSIMD, key, flags)
+	}
+
+	return ParentNode(
+		ChainingValue(mergeGroups(cvs[:len(cvs)/2], key, flags)),
+		ChainingValue(mergeGroups(cvs[len(cvs)/2:], key, flags)),
+		key,
+		flags,
+	)
 }
