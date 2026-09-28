@@ -22,6 +22,7 @@ import (
 func FuzzDecoders(f *testing.F) {
 	seedData := make([]byte, 5*1024+17)
 	blake3.New(0, nil).XOF().Read(seedData)
+
 	for _, group := range []int{0, 2} {
 		combined, _ := bao.EncodeBuf(seedData, group, false)
 		outboard, _ := bao.EncodeBuf(seedData, group, true)
@@ -29,6 +30,7 @@ func FuzzDecoders(f *testing.F) {
 		f.Add(outboard, seedData, uint8(group), uint64(1024), uint64(100))
 		f.Add(combined[:len(combined)/2], seedData, uint8(group), uint64(0), uint64(1))
 	}
+
 	f.Add([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 1, 2, 3}, []byte{}, uint8(0), uint64(0), uint64(1))
 	f.Add([]byte{}, []byte{}, uint8(0), uint64(0), uint64(0))
 
@@ -50,7 +52,14 @@ func FuzzDecoders(f *testing.F) {
 		// whose root it was checked against: the decoder's acceptance is the
 		// security property, so a false accept here is the bug that matters.
 		var out bytes.Buffer
-		if ok, err := bao.Decode(&out, bytes.NewReader(enc), nil, g, root); ok && err == nil && !bytes.Equal(out.Bytes(), data) {
+		if ok, err := bao.Decode(
+			&out,
+			bytes.NewReader(enc),
+			nil,
+			g,
+			root,
+		); ok && err == nil &&
+			!bytes.Equal(out.Bytes(), data) {
 			t.Fatalf("group %d: Decode accepted an encoding that is not of the data whose root it was given", g)
 		}
 	})

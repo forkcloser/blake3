@@ -15,17 +15,24 @@ func compressChunksAVX512(cvs *[16][8]uint32, buf *[16 * ChunkSize]byte, key *[8
 func compressChunksAVX2(cvs *[8][8]uint32, buf *[8 * ChunkSize]byte, key *[8]uint32, counter uint64, flags uint32)
 
 //go:noescape
-func compressBlocksAVX512(out *[1024]byte, block *[16]uint32, cv *[8]uint32, counter uint64, blockLen uint32, flags uint32)
+func compressBlocksAVX512(out *[1024]byte, block *[16]uint32, cv *[8]uint32, counter uint64, blockLen, flags uint32)
 
 //go:noescape
-func compressBlocksAVX2(out *[512]byte, block *[16]uint32, cv *[8]uint32, counter uint64, blockLen uint32, flags uint32)
+func compressBlocksAVX2(out *[512]byte, block *[16]uint32, cv *[8]uint32, counter uint64, blockLen, flags uint32)
 
 //go:noescape
 func compressParentsAVX2(parents *[8][8]uint32, cvs *[16][8]uint32, key *[8]uint32, flags uint32)
 
-func compressBufferAVX512(buf *[MaxSIMD * ChunkSize]byte, buflen int, key *[8]uint32, counter uint64, flags uint32) Node {
+func compressBufferAVX512(
+	buf *[MaxSIMD * ChunkSize]byte,
+	buflen int,
+	key *[8]uint32,
+	counter uint64,
+	flags uint32,
+) Node {
 	var cvs [MaxSIMD][8]uint32
 	compressChunksAVX512(&cvs, buf, key, counter, flags)
+
 	numChunks := uint64(buflen / ChunkSize)
 	if buflen%ChunkSize != 0 {
 		// use non-asm for remainder
@@ -33,24 +40,29 @@ func compressBufferAVX512(buf *[MaxSIMD * ChunkSize]byte, buflen int, key *[8]ui
 		cvs[numChunks] = ChainingValue(CompressChunk(partialChunk, key, counter+numChunks, flags))
 		numChunks++
 	}
+
 	return mergeSubtrees(&cvs, numChunks, key, flags)
 }
 
 func compressBufferAVX2(buf *[MaxSIMD * ChunkSize]byte, buflen int, key *[8]uint32, counter uint64, flags uint32) Node {
 	var cvs [MaxSIMD][8]uint32
+
 	cvHalves := (*[2][8][8]uint32)(unsafe.Pointer(&cvs))
 	bufHalves := (*[2][8 * ChunkSize]byte)(unsafe.Pointer(buf))
 	compressChunksAVX2(&cvHalves[0], &bufHalves[0], key, counter, flags)
+
 	numChunks := uint64(buflen / ChunkSize)
 	if numChunks > 8 {
 		compressChunksAVX2(&cvHalves[1], &bufHalves[1], key, counter+8, flags)
 	}
+
 	if buflen%ChunkSize != 0 {
 		// use non-asm for remainder
 		partialChunk := buf[buflen-buflen%ChunkSize : buflen]
 		cvs[numChunks] = ChainingValue(CompressChunk(partialChunk, key, counter+numChunks, flags))
 		numChunks++
 	}
+
 	return mergeSubtrees(&cvs, numChunks, key, flags)
 }
 
@@ -63,6 +75,7 @@ func CompressBuffer(buf *[MaxSIMD * ChunkSize]byte, buflen int, key *[8]uint32, 
 	if buflen <= ChunkSize {
 		return CompressChunk(buf[:buflen], key, counter, flags)
 	}
+
 	switch {
 	case haveAVX512 && buflen >= ChunkSize*2:
 		return compressBufferAVX512(buf, buflen, key, counter, flags)
@@ -82,6 +95,7 @@ func CompressChunk(chunk []byte, key *[8]uint32, counter uint64, flags uint32) N
 		BlockLen: BlockSize,
 		Flags:    flags | FlagChunkStart,
 	}
+
 	blockBytes := (*[64]byte)(unsafe.Pointer(&n.Block))[:]
 	for len(chunk) > BlockSize {
 		copy(blockBytes, chunk)
@@ -91,9 +105,11 @@ func CompressChunk(chunk []byte, key *[8]uint32, counter uint64, flags uint32) N
 	}
 	// pad last block with zeros
 	n.Block = [16]uint32{}
+
 	copy(blockBytes, chunk)
 	n.BlockLen = uint32(len(chunk))
 	n.Flags |= FlagChunkEnd
+
 	return n
 }
 
@@ -123,11 +139,13 @@ func CompressBlocksN(out *[MaxSIMD * BlockSize]byte, n Node, numBlocks int) int 
 		CompressBlocks(out, n)
 		return MaxSIMD
 	}
+
 	outs := (*[MaxSIMD][64]byte)(unsafe.Pointer(out))
 	for i := range numBlocks {
 		outs[i] = WordsToBytes(CompressNode(n))
 		n.Counter++
 	}
+
 	return numBlocks
 }
 
@@ -137,6 +155,7 @@ func mergeSubtrees(cvs *[MaxSIMD][8]uint32, numCVs uint64, key *[8]uint32, flags
 	if !haveAVX2 {
 		return mergeSubtreesGeneric(cvs, numCVs, key, flags)
 	}
+
 	for numCVs > 2 {
 		if numCVs%2 == 0 {
 			compressParentsAVX2((*[8][8]uint32)(unsafe.Pointer(cvs)), cvs, key, flags)
@@ -146,8 +165,10 @@ func mergeSubtrees(cvs *[MaxSIMD][8]uint32, numCVs uint64, key *[8]uint32, flags
 			cvs[numCVs/2] = keep
 			numCVs++
 		}
+
 		numCVs /= 2
 	}
+
 	return ParentNode(cvs[0], cvs[1], key, flags)
 }
 

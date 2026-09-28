@@ -71,18 +71,20 @@ func ParentNode(left, right [8]uint32, key *[8]uint32, flags uint32) Node {
 	}
 	copy(n.Block[:8], left[:])
 	copy(n.Block[8:], right[:])
+
 	return n
 }
 
 // Eigentrees returns the sequence of eigentree heights that increment counter
 // to counter+chunks.
-func Eigentrees(counter uint64, chunks uint64) (trees []int) {
+func Eigentrees(counter, chunks uint64) (trees []int) {
 	for i := counter; i < counter+chunks; {
 		bite := min(bits.TrailingZeros64(i), bits.Len64(counter+chunks-i)-1)
 		trees = append(trees, bite)
 		i += 1 << bite
 	}
-	return
+
+	return trees
 }
 
 // CompressEigentree compresses a buffer of 2^n chunks in parallel, returning
@@ -108,6 +110,7 @@ func CompressEigentree(buf []byte, key *[8]uint32, counter uint64, flags uint32)
 			var tmp [MaxSIMD * ChunkSize]byte
 			return CompressBuffer(&tmp, copy(tmp[:], buf), key, counter, flags)
 		}
+
 		return CompressBuffer((*[MaxSIMD * ChunkSize]byte)(buf[:MaxSIMD*ChunkSize]), len(buf), key, counter, flags)
 	default:
 		// One CV per MaxSIMD-chunk group; the merge below is defined over
@@ -122,41 +125,59 @@ func CompressEigentree(buf []byte, key *[8]uint32, counter uint64, flags uint32)
 		cvs := make([][8]uint32, groups)
 		compressGroups := func(lo, hi uint64) {
 			for i := lo; i < hi; i++ {
-				cvs[i] = ChainingValue(CompressBuffer((*[MaxSIMD * ChunkSize]byte)(buf[i*MaxSIMD*ChunkSize:]), MaxSIMD*ChunkSize, key, counter+(MaxSIMD*i), flags))
+				cvs[i] = ChainingValue(
+					CompressBuffer(
+						(*[MaxSIMD * ChunkSize]byte)(buf[i*MaxSIMD*ChunkSize:]),
+						MaxSIMD*ChunkSize,
+						key,
+						counter+(MaxSIMD*i),
+						flags,
+					),
+				)
 			}
 		}
+
 		const groupsPerGoroutine = minParallelBytes / (MaxSIMD * ChunkSize)
 		if par := min(groups/groupsPerGoroutine, uint64(runtime.NumCPU())); par > 1 {
 			// Deal groups out in par near-equal contiguous runs; the
 			// remainder folds into the runs rather than a second spawn.
 			per, extra := groups/par, groups%par
+
 			var wg sync.WaitGroup
+
 			for w, lo := uint64(0), uint64(0); w < par; w++ {
 				hi := lo + per
 				if w < extra {
 					hi++
 				}
+
 				wg.Add(1)
 				go func(lo, hi uint64) {
 					defer wg.Done()
+
 					compressGroups(lo, hi)
 				}(lo, hi)
+
 				lo = hi
 			}
+
 			wg.Wait()
 		} else {
 			compressGroups(0, groups)
 		}
 
 		var rec func(cvs [][8]uint32) Node
+
 		rec = func(cvs [][8]uint32) Node {
 			if len(cvs) == 2 {
 				return ParentNode(cvs[0], cvs[1], key, flags)
 			} else if len(cvs) == MaxSIMD {
 				return mergeSubtrees((*[MaxSIMD][8]uint32)(cvs), MaxSIMD, key, flags)
 			}
+
 			return ParentNode(ChainingValue(rec(cvs[:len(cvs)/2])), ChainingValue(rec(cvs[len(cvs)/2:])), key, flags)
 		}
+
 		return rec(cvs)
 	}
 }

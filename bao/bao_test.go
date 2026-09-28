@@ -21,10 +21,12 @@ func TestBaoGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	goldenInterleaved, err := os.ReadFile("../testdata/bao-golden.bao")
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	goldenOutboard, err := os.ReadFile("../testdata/bao-golden.obao")
 	if err != nil {
 		t.Fatal(err)
@@ -54,6 +56,7 @@ func TestBaoGolden(t *testing.T) {
 	case !bao.VerifyBuf(interleaved, nil, 0, root):
 		t.Error("verify failed")
 	}
+
 	outboard, root = bao.EncodeBuf(nil, 0, true)
 	switch {
 	case toHex(root[:]) != "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262":
@@ -74,26 +77,35 @@ func TestBaoInterleaved(t *testing.T) {
 		if !bao.VerifyBuf(interleaved, nil, group, root) {
 			t.Fatal("verify failed")
 		}
+
 		badRoot := root
+
 		badRoot[0] ^= 1
 		if bao.VerifyBuf(interleaved, nil, group, badRoot) {
 			t.Fatal("verify succeeded with bad root")
 		}
+
 		badPrefix := append([]byte(nil), interleaved...)
+
 		badPrefix[0] ^= 1
 		if bao.VerifyBuf(badPrefix, nil, group, root) {
 			t.Fatal("verify succeeded with bad length prefix")
 		}
+
 		badCVs := append([]byte(nil), interleaved...)
+
 		badCVs[8] ^= 1
 		if bao.VerifyBuf(badCVs, nil, group, root) {
 			t.Fatal("verify succeeded with bad cv data")
 		}
+
 		badData := append([]byte(nil), interleaved...)
+
 		badData[len(badData)-1] ^= 1
 		if bao.VerifyBuf(badData, nil, group, root) {
 			t.Fatal("verify succeeded with bad content")
 		}
+
 		extraData := append(append([]byte(nil), interleaved...), 1, 2, 3)
 		if bao.VerifyBuf(extraData, nil, group, root) {
 			t.Fatal("verify succeeded with extra data")
@@ -110,17 +122,23 @@ func TestBaoOutboard(t *testing.T) {
 		if !bao.VerifyBuf(data, outboard, group, root) {
 			t.Fatal("verify failed")
 		}
+
 		badRoot := root
+
 		badRoot[0] ^= 1
 		if bao.VerifyBuf(data, outboard, group, badRoot) {
 			t.Fatal("verify succeeded with bad root")
 		}
+
 		badPrefix := append([]byte(nil), outboard...)
+
 		badPrefix[0] ^= 1
 		if bao.VerifyBuf(data, badPrefix, group, root) {
 			t.Fatal("verify succeeded with bad length prefix")
 		}
+
 		badCVs := append([]byte(nil), outboard...)
+
 		badCVs[8] ^= 1
 		if bao.VerifyBuf(data, badCVs, group, root) {
 			t.Fatal("verify succeeded with bad cv data")
@@ -131,10 +149,12 @@ func TestBaoOutboard(t *testing.T) {
 func TestBaoChunkGroup(t *testing.T) {
 	// from https://github.com/n0-computer/abao/blob/9b756ec8097afc782d76f7aec0a5ac9f4b82329a/tests/test_vectors.json
 	const group = 4 // 16 KiB
+
 	baoInput := func(n int) (in []byte) {
 		for i := uint32(1); len(in) < n; i++ {
 			in = binary.LittleEndian.AppendUint32(in, i)
 		}
+
 		return in[:n]
 	}
 	for _, test := range []struct {
@@ -155,9 +175,15 @@ func TestBaoChunkGroup(t *testing.T) {
 		{212992, "760c549edfe95c734b1d6a9b846d81692ed3ca022b541442949a0e42fe570df2"},
 	} {
 		input := baoInput(test.inputLen)
+
 		_, root := bao.EncodeBuf(input, group, false)
 		if out := toHex(root[:]); out != test.exp {
-			t.Errorf("output %v did not match test vector:\n\texpected: %v...\n\t     got: %v...", test.inputLen, test.exp[:10], out[:10])
+			t.Errorf(
+				"output %v did not match test vector:\n\texpected: %v...\n\t     got: %v...",
+				test.inputLen,
+				test.exp[:10],
+				out[:10],
+			)
 		}
 	}
 }
@@ -168,14 +194,18 @@ func TestBaoVerifyChunk(t *testing.T) {
 
 	for _, group := range []int{0, 4} {
 		groupSize := 1024 << group
+
 		outboard, root := bao.EncodeBuf(data, group, true)
 		for _, g := range []int{0, 1, 5, len(data)/groupSize - 1} {
 			off := g * groupSize
+
 			chunk := data[off:][:groupSize]
 			if !bao.VerifyChunk(chunk, outboard, group, uint64(off), root) {
 				t.Errorf("group %v: verify failed at offset %v", group, off)
 			}
+
 			badChunk := append([]byte(nil), chunk...)
+
 			badChunk[0] ^= 1
 			if bao.VerifyChunk(badChunk, outboard, group, uint64(off), root) {
 				t.Errorf("group %v: verify succeeded with corrupted chunk at offset %v", group, off)
@@ -193,7 +223,9 @@ func TestBaoVerifyChunk(t *testing.T) {
 	if !bao.VerifyChunk(nil, outboard, 0, 0, root) {
 		t.Error("verify failed for empty encoding")
 	}
+
 	badRoot := root
+
 	badRoot[0] ^= 1
 	if bao.VerifyChunk(nil, outboard, 0, 0, badRoot) {
 		t.Error("verify succeeded for empty encoding with bad root")
@@ -216,9 +248,11 @@ func TestBaoInvalidSliceBounds(t *testing.T) {
 		if err := bao.ExtractSlice(io.Discard, bytes.NewReader(enc), nil, 0, test.off, test.len); err == nil {
 			t.Errorf("ExtractSlice accepted invalid slice bounds (%v, %v)", test.off, test.len)
 		}
+
 		if ok, err := bao.DecodeSlice(io.Discard, bytes.NewReader(enc), 0, test.off, test.len, root); ok || err == nil {
 			t.Errorf("DecodeSlice accepted invalid slice bounds (%v, %v)", test.off, test.len)
 		}
+
 		if _, ok := bao.VerifySlice(enc, 0, test.off, test.len, root); ok {
 			t.Errorf("VerifySlice accepted invalid slice bounds (%v, %v)", test.off, test.len)
 		}
@@ -233,6 +267,7 @@ func TestBaoStreaming(t *testing.T) {
 	if root != blake3.Sum256(data) {
 		t.Fatal("bad root")
 	}
+
 	var buf bytes.Buffer
 	if ok, err := bao.Decode(&buf, bytes.NewReader(enc), nil, 0, root); err != nil || !ok {
 		t.Fatal("decode failed")
@@ -242,6 +277,7 @@ func TestBaoStreaming(t *testing.T) {
 
 	// corrupt root; nothing should be written to buf
 	buf.Reset()
+
 	if ok, err := bao.Decode(&buf, bytes.NewReader(enc), nil, 0, [32]byte{}); err != nil {
 		t.Fatal("decode failed")
 	} else if ok {
@@ -252,6 +288,7 @@ func TestBaoStreaming(t *testing.T) {
 
 	// corrupt a byte halfway through; buf should only be partially written
 	buf.Reset()
+
 	enc[len(enc)/2] ^= 1
 	if ok, err := bao.Decode(&buf, bytes.NewReader(enc), nil, 0, root); err != nil {
 		t.Fatal("decode failed")
@@ -279,6 +316,7 @@ func TestBaoSlice(t *testing.T) {
 		// combined encoding
 		{
 			enc, root := bao.EncodeBuf(data, 0, false)
+
 			var buf bytes.Buffer
 			if err := bao.ExtractSlice(&buf, bytes.NewReader(enc), nil, 0, test.off, test.len); err != nil {
 				t.Error(err)
@@ -291,16 +329,34 @@ func TestBaoSlice(t *testing.T) {
 		// outboard encoding
 		{
 			enc, root := bao.EncodeBuf(data, 0, true)
+
 			start, end := (test.off/1024)*1024, ((test.off+test.len+1024-1)/1024)*1024
 			if end > uint64(len(data)) {
 				end = uint64(len(data))
 			}
+
 			var buf bytes.Buffer
-			if err := bao.ExtractSlice(&buf, bytes.NewReader(data[start:end]), bytes.NewReader(enc), 0, test.off, test.len); err != nil {
+			if err := bao.ExtractSlice(
+				&buf,
+				bytes.NewReader(data[start:end]),
+				bytes.NewReader(enc),
+				0,
+				test.off,
+				test.len,
+			); err != nil {
 				t.Error(err)
-			} else if vdata, ok := bao.VerifySlice(buf.Bytes(), 0, test.off, test.len, root); !ok {
+			} else if vdata, ok := bao.VerifySlice(
+				buf.Bytes(),
+				0,
+				test.off,
+				test.len,
+				root,
+			); !ok {
 				t.Error("outboard verify failed", test)
-			} else if !bytes.Equal(vdata, data[test.off:][:test.len]) {
+			} else if !bytes.Equal(
+				vdata,
+				data[test.off:][:test.len],
+			) {
 				t.Error("outboard bad decode", test, vdata, data[test.off:][:test.len])
 			}
 		}
@@ -320,16 +376,19 @@ func TestBaoGroupRange(t *testing.T) {
 
 	mustPanic := func(name string, f func()) {
 		t.Helper()
+
 		defer func() {
 			r := recover()
 			if r == nil {
 				t.Errorf("%s: no panic", name)
 				return
 			}
+
 			if msg, ok := r.(string); !ok || !strings.Contains(msg, "group") {
 				t.Errorf("%s: panicked with %v, want the named group message", name, r)
 			}
 		}()
+
 		f()
 	}
 	for _, group := range []int{-1, bao.MaxGroup + 1, math.MinInt, math.MaxInt} {
@@ -349,6 +408,7 @@ func TestBaoGroupRange(t *testing.T) {
 	if got := bao.EncodedSize(10, bao.MaxGroup, true); got != 8 {
 		t.Errorf("EncodedSize at MaxGroup = %d, want 8", got)
 	}
+
 	if got := bao.EncodedSize(0, 0, true); got != 8 {
 		t.Errorf("EncodedSize(0, 0, true) = %d, want 8", got)
 	}
@@ -359,15 +419,18 @@ func TestBaoNegativeDataLen(t *testing.T) {
 	if err == nil {
 		t.Fatal("Encode accepted a negative dataLen")
 	}
+
 	if root != [32]byte{} {
 		t.Errorf("Encode returned a root for a negative dataLen")
 	}
+
 	func() {
 		defer func() {
 			if recover() == nil {
 				t.Error("EncodedSize accepted a negative dataLen")
 			}
 		}()
+
 		bao.EncodedSize(-1, 0, false)
 	}()
 }
