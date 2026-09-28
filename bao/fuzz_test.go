@@ -22,6 +22,7 @@ import (
 func FuzzDecoders(f *testing.F) {
 	seedData := make([]byte, 5*1024+17)
 	blake3.New(0, nil).XOF().Read(seedData)
+
 	for _, group := range []int{0, 2} {
 		combined, _ := bao.EncodeBuf(seedData, group, false)
 		outboard, _ := bao.EncodeBuf(seedData, group, true)
@@ -29,6 +30,7 @@ func FuzzDecoders(f *testing.F) {
 		f.Add(outboard, seedData, uint8(group), uint64(1024), uint64(100))
 		f.Add(combined[:len(combined)/2], seedData, uint8(group), uint64(0), uint64(1))
 	}
+
 	f.Add([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 1, 2, 3}, []byte{}, uint8(0), uint64(0), uint64(1))
 	f.Add([]byte{}, []byte{}, uint8(0), uint64(0), uint64(0))
 

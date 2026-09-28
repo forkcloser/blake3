@@ -25,6 +25,7 @@ func CompressChunk(chunk []byte, key *[8]uint32, counter uint64, flags uint32) N
 		BlockLen: BlockSize,
 		Flags:    flags | FlagChunkStart,
 	}
+
 	var block [BlockSize]byte
 	for len(chunk) > BlockSize {
 		copy(block[:], chunk)
@@ -38,6 +39,7 @@ func CompressChunk(chunk []byte, key *[8]uint32, counter uint64, flags uint32) N
 	n.BlockLen = uint32(copy(block[:], chunk))
 	n.Block = BytesToWords(block)
 	n.Flags |= FlagChunkEnd
+
 	return n
 }
 
@@ -46,6 +48,7 @@ func CompressChunk(chunk []byte, key *[8]uint32, counter uint64, flags uint32) N
 func CompressBlocks(out *[MaxSIMD * BlockSize]byte, n Node) {
 	var outs [MaxSIMD][64]byte
 	compressBlocksGeneric(&outs, n)
+
 	for i := range outs {
 		copy(out[i*64:], outs[i][:])
 	}
@@ -58,8 +61,10 @@ func CompressBlocksN(out *[MaxSIMD * BlockSize]byte, n Node, numBlocks int) int 
 	for i := range numBlocks {
 		block := WordsToBytes(CompressNode(n))
 		copy(out[i*BlockSize:], block[:])
+
 		n.Counter++
 	}
+
 	return numBlocks
 }
 
@@ -74,6 +79,7 @@ func BytesToWords(bytes [64]byte) (words [16]uint32) {
 	for i := range words {
 		words[i] = binary.LittleEndian.Uint32(bytes[4*i:])
 	}
+
 	return
 }
 
@@ -82,5 +88,6 @@ func WordsToBytes(words [16]uint32) (block [64]byte) {
 	for i, w := range words {
 		binary.LittleEndian.PutUint32(block[4*i:], w)
 	}
+
 	return
 }

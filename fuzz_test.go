@@ -22,6 +22,7 @@ import (
 // only length and splits; a large input to the engine buys nothing.
 func FuzzWriteEquivalence(f *testing.F) {
 	const maxLen = 300 * guts.ChunkSize
+
 	data := make([]byte, maxLen)
 	// LCG-filled: deterministic, cheap, no math/rand dependency in the seed.
 	x := uint32(0x9E3779B9)
@@ -29,6 +30,7 @@ func FuzzWriteEquivalence(f *testing.F) {
 		x = x*1664525 + 1013904223
 		data[i] = byte(x >> 24)
 	}
+
 	key := data[:32]
 
 	f.Add(uint32(64*guts.ChunkSize), []byte{})
@@ -47,11 +49,13 @@ func FuzzWriteEquivalence(f *testing.F) {
 			}
 			// reference: chunk-at-a-time, never the eigentree path
 			ref := blake3.New(64, k)
+
 			for b := in; len(b) > 0; {
 				m := min(len(b), guts.ChunkSize)
 				ref.Write(b[:m])
 				b = b[m:]
 			}
+
 			want := ref.Sum(nil)
 
 			// candidate: writes cut where the fuzzed pattern says. Each
@@ -60,19 +64,24 @@ func FuzzWriteEquivalence(f *testing.F) {
 			// chunk and tree boundaries; a run of zeros degenerates to a
 			// single write, a long pattern to many small ones.
 			h := blake3.New(64, k)
+
 			rem := in
 			for _, s := range splits {
 				if len(rem) == 0 {
 					break
 				}
+
 				cut := (int(s) * guts.ChunkSize) / 16
 				if cut == 0 || cut >= len(rem) {
 					continue
 				}
+
 				h.Write(rem[:cut])
 				rem = rem[cut:]
 			}
+
 			h.Write(rem)
+
 			if got := h.Sum(nil); !bytes.Equal(got, want) {
 				t.Fatalf("keyed=%v len=%d splits=%v: eigentree path diverges from reference", keyed, n, splits)
 			}

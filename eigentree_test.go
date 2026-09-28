@@ -26,6 +26,7 @@ import (
 // the keyed flag rides along.
 func TestEigentreeWriteEquivalence(t *testing.T) {
 	const maxLen = 300 * guts.ChunkSize
+
 	in := make([]byte, maxLen)
 	rng := rand.New(rand.NewSource(1))
 	rng.Read(in)
@@ -38,6 +39,7 @@ func TestEigentreeWriteEquivalence(t *testing.T) {
 			h.Write(b[:n])
 			b = b[n:]
 		}
+
 		return h.Sum(nil)
 	}
 
@@ -45,6 +47,7 @@ func TestEigentreeWriteEquivalence(t *testing.T) {
 	for c := 1; c <= 64; c++ { // every chunk count to 64, plus off-by-one bytes
 		lens = append(lens, c*guts.ChunkSize, c*guts.ChunkSize+1, c*guts.ChunkSize-1)
 	}
+
 	for _, c := range []int{65, 96, 127, 128, 129, 200, 255, 256, 257, 300} {
 		lens = append(lens, c*guts.ChunkSize, c*guts.ChunkSize+7)
 	}
@@ -54,10 +57,12 @@ func TestEigentreeWriteEquivalence(t *testing.T) {
 		func() *blake3.Hasher { return blake3.New(64, nil) },
 		func() *blake3.Hasher { return blake3.New(64, key) },
 	}
+
 	for _, l := range lens {
 		if l > maxLen || l <= 0 {
 			continue
 		}
+
 		data := in[:l]
 		for hi, ctor := range ctors {
 			want := ref(ctor(), data)
@@ -65,6 +70,7 @@ func TestEigentreeWriteEquivalence(t *testing.T) {
 			// one-shot Write: the whole eigentree cascade at counter 0
 			got := ctor()
 			got.Write(data)
+
 			if s := got.Sum(nil); !bytes.Equal(s, want) {
 				t.Fatalf("%s len=%d one-shot: mismatch", names[hi], l)
 			}
@@ -80,9 +86,11 @@ func TestEigentreeWriteEquivalence(t *testing.T) {
 				if split >= l {
 					continue
 				}
+
 				h := ctor()
 				h.Write(data[:split])
 				h.Write(data[split:])
+
 				if s := h.Sum(nil); !bytes.Equal(s, want) {
 					t.Fatalf("%s len=%d split=%d: mismatch", names[hi], l, split)
 				}
@@ -93,6 +101,7 @@ func TestEigentreeWriteEquivalence(t *testing.T) {
 				h := ctor()
 				h.Write(data[:split])
 				h.Write(data[split:])
+
 				if s := h.Sum(nil); !bytes.Equal(s, want) {
 					t.Fatalf("%s len=%d rand split=%d: mismatch", names[hi], l, split)
 				}
