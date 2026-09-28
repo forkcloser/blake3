@@ -15,15 +15,21 @@ func compressChunksAVX512(cvs *[16][8]uint32, buf *[16 * ChunkSize]byte, key *[8
 func compressChunksAVX2(cvs *[8][8]uint32, buf *[8 * ChunkSize]byte, key *[8]uint32, counter uint64, flags uint32)
 
 //go:noescape
-func compressBlocksAVX512(out *[1024]byte, block *[16]uint32, cv *[8]uint32, counter uint64, blockLen uint32, flags uint32)
+func compressBlocksAVX512(out *[1024]byte, block *[16]uint32, cv *[8]uint32, counter uint64, blockLen, flags uint32)
 
 //go:noescape
-func compressBlocksAVX2(out *[512]byte, block *[16]uint32, cv *[8]uint32, counter uint64, blockLen uint32, flags uint32)
+func compressBlocksAVX2(out *[512]byte, block *[16]uint32, cv *[8]uint32, counter uint64, blockLen, flags uint32)
 
 //go:noescape
 func compressParentsAVX2(parents *[8][8]uint32, cvs *[16][8]uint32, key *[8]uint32, flags uint32)
 
-func compressBufferAVX512(buf *[MaxSIMD * ChunkSize]byte, buflen int, key *[8]uint32, counter uint64, flags uint32) Node {
+func compressBufferAVX512(
+	buf *[MaxSIMD * ChunkSize]byte,
+	buflen int,
+	key *[8]uint32,
+	counter uint64,
+	flags uint32,
+) Node {
 	var cvs [MaxSIMD][8]uint32
 	compressChunksAVX512(&cvs, buf, key, counter, flags)
 

@@ -52,7 +52,14 @@ func FuzzDecoders(f *testing.F) {
 		// whose root it was checked against: the decoder's acceptance is the
 		// security property, so a false accept here is the bug that matters.
 		var out bytes.Buffer
-		if ok, err := bao.Decode(&out, bytes.NewReader(enc), nil, g, root); ok && err == nil && !bytes.Equal(out.Bytes(), data) {
+		if ok, err := bao.Decode(
+			&out,
+			bytes.NewReader(enc),
+			nil,
+			g,
+			root,
+		); ok && err == nil &&
+			!bytes.Equal(out.Bytes(), data) {
 			t.Fatalf("group %d: Decode accepted an encoding that is not of the data whose root it was given", g)
 		}
 	})

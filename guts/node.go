@@ -77,14 +77,14 @@ func ParentNode(left, right [8]uint32, key *[8]uint32, flags uint32) Node {
 
 // Eigentrees returns the sequence of eigentree heights that increment counter
 // to counter+chunks.
-func Eigentrees(counter uint64, chunks uint64) (trees []int) {
+func Eigentrees(counter, chunks uint64) (trees []int) {
 	for i := counter; i < counter+chunks; {
 		bite := min(bits.TrailingZeros64(i), bits.Len64(counter+chunks-i)-1)
 		trees = append(trees, bite)
 		i += 1 << bite
 	}
 
-	return
+	return trees
 }
 
 // CompressEigentree compresses a buffer of 2^n chunks in parallel, returning
@@ -125,7 +125,15 @@ func CompressEigentree(buf []byte, key *[8]uint32, counter uint64, flags uint32)
 		cvs := make([][8]uint32, groups)
 		compressGroups := func(lo, hi uint64) {
 			for i := lo; i < hi; i++ {
-				cvs[i] = ChainingValue(CompressBuffer((*[MaxSIMD * ChunkSize]byte)(buf[i*MaxSIMD*ChunkSize:]), MaxSIMD*ChunkSize, key, counter+(MaxSIMD*i), flags))
+				cvs[i] = ChainingValue(
+					CompressBuffer(
+						(*[MaxSIMD * ChunkSize]byte)(buf[i*MaxSIMD*ChunkSize:]),
+						MaxSIMD*ChunkSize,
+						key,
+						counter+(MaxSIMD*i),
+						flags,
+					),
+				)
 			}
 		}
 

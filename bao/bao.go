@@ -97,7 +97,7 @@ func compressGroup(p []byte, counter uint64) guts.Node {
 
 // EncodedSize returns the size of a Bao encoding for the provided quantity
 // of data. It panics if dataLen is negative.
-func EncodedSize(dataLen int, group int, outboard bool) int {
+func EncodedSize(dataLen, group int, outboard bool) int {
 	checkGroup(group)
 
 	if dataLen < 0 {
@@ -324,7 +324,7 @@ func VerifyBuf(data, outboard []byte, group int, root [32]byte) bool {
 // ExtractSlice returns the slice encoding for the given offset and length. When
 // extracting from an outboard encoding, data should contain only the chunk
 // groups that will be present in the slice.
-func ExtractSlice(dst io.Writer, data, outboard io.Reader, group int, offset uint64, length uint64) error {
+func ExtractSlice(dst io.Writer, data, outboard io.Reader, group int, offset, length uint64) error {
 	checkGroup(group)
 
 	combinedEncoding := outboard == nil
@@ -474,7 +474,7 @@ func DecodeSlice(dst io.Writer, data io.Reader, group int, offset, length uint64
 
 // VerifySlice verifies the Bao slice encoding in data, returning the
 // verified bytes.
-func VerifySlice(data []byte, group int, offset uint64, length uint64, root [32]byte) ([]byte, bool) {
+func VerifySlice(data []byte, group int, offset, length uint64, root [32]byte) ([]byte, bool) {
 	checkGroup(group)
 
 	d := bytes.NewBuffer(data)

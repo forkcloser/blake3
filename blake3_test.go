@@ -26,7 +26,8 @@ var testVectors = func() (vecs struct {
 		KeyedHash string `json:"keyed_hash"`
 		DeriveKey string `json:"derive_key"`
 	}
-}) {
+},
+) {
 	data, err := os.ReadFile("testdata/vectors.json")
 	if err != nil {
 		panic(err)
@@ -36,7 +37,7 @@ var testVectors = func() (vecs struct {
 		panic(err)
 	}
 
-	return
+	return vecs
 }()
 
 var testInput = func() []byte {
@@ -65,7 +66,11 @@ func TestVectors(t *testing.T) {
 		h.Write(in)
 
 		if out := toHex(h.Sum(nil)); out != vec.KeyedHash {
-			t.Errorf("output did not match test vector:\n\texpected: %v...\n\t     got: %v...", vec.KeyedHash[:10], out[:10])
+			t.Errorf(
+				"output did not match test vector:\n\texpected: %v...\n\t     got: %v...",
+				vec.KeyedHash[:10],
+				out[:10],
+			)
 		}
 
 		// derive key
@@ -75,7 +80,11 @@ func TestVectors(t *testing.T) {
 		blake3.DeriveKey(subKey, ctx, in)
 
 		if out := toHex(subKey); out != vec.DeriveKey {
-			t.Errorf("output did not match test vector:\n\texpected: %v...\n\t     got: %v...", vec.DeriveKey[:10], out[:10])
+			t.Errorf(
+				"output did not match test vector:\n\texpected: %v...\n\t     got: %v...",
+				vec.DeriveKey[:10],
+				out[:10],
+			)
 		}
 	}
 }
@@ -94,7 +103,11 @@ func TestXOF(t *testing.T) {
 		io.CopyBuffer(&xofBuf, io.LimitReader(h.XOF(), 4096), make([]byte, 7))
 
 		if out := toHex(xofBuf.Bytes()[:len(vec.Hash)/2]); out != vec.Hash {
-			t.Errorf("XOF output did not match test vector:\n\texpected: %v...\n\t     got: %v...", vec.Hash[:10], out[:10])
+			t.Errorf(
+				"XOF output did not match test vector:\n\texpected: %v...\n\t     got: %v...",
+				vec.Hash[:10],
+				out[:10],
+			)
 		}
 
 		// Should be able to Seek around in the output stream without affecting correctness
@@ -121,7 +134,12 @@ func TestXOF(t *testing.T) {
 			xof.Read(xofRead[:n])
 
 			if !bytes.Equal(outRead[:n], xofRead[:n]) {
-				t.Errorf("XOF output did not match test vector at offset %v:\n\texpected: %x...\n\t     got: %x...", offset, outRead[:10], xofRead[:10])
+				t.Errorf(
+					"XOF output did not match test vector at offset %v:\n\texpected: %x...\n\t     got: %x...",
+					offset,
+					outRead[:10],
+					xofRead[:10],
+				)
 			}
 		}
 	}
@@ -194,7 +212,7 @@ func TestXOF(t *testing.T) {
 
 		xof.Seek(0, 17)
 
-		return
+		return p
 	}()
 	if !didPanic {
 		t.Error("expected panic when seeking with invalid whence")
@@ -350,7 +368,11 @@ func TestSum(t *testing.T) {
 		h.Sum(exp256[:0])
 
 		if got256 := blake3.Sum256(in); exp256 != got256 {
-			t.Errorf("Sum256 output did not match Sum output:\n\texpected: %x...\n\t     got: %x...", exp256[:5], got256[:5])
+			t.Errorf(
+				"Sum256 output did not match Sum output:\n\texpected: %x...\n\t     got: %x...",
+				exp256[:5],
+				got256[:5],
+			)
 		}
 
 		var exp512 [64]byte
@@ -360,7 +382,11 @@ func TestSum(t *testing.T) {
 		h.Sum(exp512[:0])
 
 		if got512 := blake3.Sum512(in); exp512 != got512 {
-			t.Errorf("Sum512 output did not match Sum output:\n\texpected: %x...\n\t     got: %x...", exp512[:5], got512[:5])
+			t.Errorf(
+				"Sum512 output did not match Sum output:\n\texpected: %x...\n\t     got: %x...",
+				exp512[:5],
+				got512[:5],
+			)
 		}
 	}
 }

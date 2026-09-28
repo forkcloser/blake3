@@ -178,7 +178,12 @@ func TestBaoChunkGroup(t *testing.T) {
 
 		_, root := bao.EncodeBuf(input, group, false)
 		if out := toHex(root[:]); out != test.exp {
-			t.Errorf("output %v did not match test vector:\n\texpected: %v...\n\t     got: %v...", test.inputLen, test.exp[:10], out[:10])
+			t.Errorf(
+				"output %v did not match test vector:\n\texpected: %v...\n\t     got: %v...",
+				test.inputLen,
+				test.exp[:10],
+				out[:10],
+			)
 		}
 	}
 }
@@ -331,11 +336,27 @@ func TestBaoSlice(t *testing.T) {
 			}
 
 			var buf bytes.Buffer
-			if err := bao.ExtractSlice(&buf, bytes.NewReader(data[start:end]), bytes.NewReader(enc), 0, test.off, test.len); err != nil {
+			if err := bao.ExtractSlice(
+				&buf,
+				bytes.NewReader(data[start:end]),
+				bytes.NewReader(enc),
+				0,
+				test.off,
+				test.len,
+			); err != nil {
 				t.Error(err)
-			} else if vdata, ok := bao.VerifySlice(buf.Bytes(), 0, test.off, test.len, root); !ok {
+			} else if vdata, ok := bao.VerifySlice(
+				buf.Bytes(),
+				0,
+				test.off,
+				test.len,
+				root,
+			); !ok {
 				t.Error("outboard verify failed", test)
-			} else if !bytes.Equal(vdata, data[test.off:][:test.len]) {
+			} else if !bytes.Equal(
+				vdata,
+				data[test.off:][:test.len],
+			) {
 				t.Error("outboard bad decode", test, vdata, data[test.off:][:test.len])
 			}
 		}

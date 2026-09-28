@@ -256,7 +256,7 @@ func (h *Hasher) Sum(b []byte) (sum []byte) {
 		or.Read(dst)
 	}
 
-	return
+	return sum
 }
 
 // Reset implements hash.Hash.
@@ -320,7 +320,7 @@ func Sum256(b []byte) (out [32]byte) {
 	out512 := Sum512(b)
 	copy(out[:], out512[:])
 
-	return
+	return out
 }
 
 // Sum512 returns the unkeyed BLAKE3 hash of b, truncated to 512 bits.

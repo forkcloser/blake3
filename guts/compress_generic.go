@@ -108,10 +108,16 @@ func ChainingValue(n Node) (cv [8]uint32) {
 	full := CompressNode(n)
 	copy(cv[:], full[:])
 
-	return
+	return cv
 }
 
-func compressBufferGeneric(buf *[MaxSIMD * ChunkSize]byte, buflen int, key *[8]uint32, counter uint64, flags uint32) (n Node) {
+func compressBufferGeneric(
+	buf *[MaxSIMD * ChunkSize]byte,
+	buflen int,
+	key *[8]uint32,
+	counter uint64,
+	flags uint32,
+) (n Node) {
 	if buflen <= ChunkSize {
 		return CompressChunk(buf[:buflen], key, counter, flags)
 	}

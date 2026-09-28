@@ -80,7 +80,7 @@ func BytesToWords(bytes [64]byte) (words [16]uint32) {
 		words[i] = binary.LittleEndian.Uint32(bytes[4*i:])
 	}
 
-	return
+	return words
 }
 
 // WordsToBytes converts an array of 16 words to an array of 64 bytes.
@@ -89,5 +89,5 @@ func WordsToBytes(words [16]uint32) (block [64]byte) {
 		binary.LittleEndian.PutUint32(block[4*i:], w)
 	}
 
-	return
+	return block
 }
