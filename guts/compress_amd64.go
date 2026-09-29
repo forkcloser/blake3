@@ -33,7 +33,7 @@ func compressBufferAVX512(
 	var cvs [MaxSIMD][8]uint32
 	compressChunksAVX512(&cvs, buf, key, counter, flags)
 
-	numChunks := uint64(buflen / ChunkSize)
+	numChunks := uint64(buflen / ChunkSize) // #nosec G115 -- buflen is a buffer's length, never negative
 	if buflen%ChunkSize != 0 {
 		// use non-asm for remainder
 		partialChunk := buf[buflen-buflen%ChunkSize : buflen]
@@ -51,7 +51,7 @@ func compressBufferAVX2(buf *[MaxSIMD * ChunkSize]byte, buflen int, key *[8]uint
 	bufHalves := (*[2][8 * ChunkSize]byte)(unsafe.Pointer(buf)) // #nosec G103 -- the same memory viewed as an array of the same size
 	compressChunksAVX2(&cvHalves[0], &bufHalves[0], key, counter, flags)
 
-	numChunks := uint64(buflen / ChunkSize)
+	numChunks := uint64(buflen / ChunkSize) // #nosec G115 -- buflen is a buffer's length, never negative
 	if numChunks > 8 {
 		compressChunksAVX2(&cvHalves[1], &bufHalves[1], key, counter+8, flags)
 	}
@@ -107,7 +107,7 @@ func CompressChunk(chunk []byte, key *[8]uint32, counter uint64, flags uint32) N
 	n.Block = [16]uint32{}
 
 	copy(blockBytes, chunk)
-	n.BlockLen = uint32(len(chunk))
+	n.BlockLen = uint32(len(chunk)) // #nosec G115 -- the last block, at most BlockSize bytes
 	n.Flags |= FlagChunkEnd
 
 	return n
