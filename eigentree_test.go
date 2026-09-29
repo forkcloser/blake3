@@ -2,7 +2,7 @@ package blake3_test
 
 import (
 	"bytes"
-	"math/rand"
+	"math/rand/v2"
 	"testing"
 
 	"github.com/forkcloser/blake3"
@@ -30,8 +30,11 @@ func TestEigentreeWriteEquivalence(t *testing.T) {
 	const maxLen = 300 * guts.ChunkSize
 
 	in := make([]byte, maxLen)
-	rng := rand.New(rand.NewSource(1))
-	rng.Read(in)
+	if _, err := rand.NewChaCha8([32]byte{1}).Read(in); err != nil {
+		t.Fatal(err)
+	}
+
+	rng := rand.New(rand.NewPCG(1, 1))
 	key := in[:32]
 
 	// reference: chunk-at-a-time, never touching the eigentree path
@@ -99,7 +102,7 @@ func TestEigentreeWriteEquivalence(t *testing.T) {
 			}
 			// and a few random splits per length
 			for range 3 {
-				split := rng.Intn(l)
+				split := rng.IntN(l)
 				h := ctor()
 				h.Write(data[:split])
 				h.Write(data[split:])
