@@ -405,7 +405,10 @@ func TestBaoGroupRange(t *testing.T) {
 	}
 	for _, group := range []int{-1, bao.MaxGroup + 1, math.MinInt, math.MaxInt} {
 		mustPanic("EncodedSize", func() { bao.EncodedSize(10, group, false) })
-		mustPanic("Encode", func() { _, _ = bao.Encode(discardAt{}, bytes.NewReader(data), int64(len(data)), group, false) })
+		mustPanic(
+			"Encode",
+			func() { _, _ = bao.Encode(discardAt{}, bytes.NewReader(data), int64(len(data)), group, false) },
+		)
 		mustPanic("Decode", func() { _, _ = bao.Decode(io.Discard, bytes.NewReader(enc), nil, group, root) })
 		mustPanic("EncodeBuf", func() { bao.EncodeBuf(data, group, false) })
 		mustPanic("VerifyBuf", func() { bao.VerifyBuf(enc, nil, group, root) })
