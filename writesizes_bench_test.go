@@ -18,7 +18,7 @@ func BenchmarkWriteSizes(b *testing.B) {
 			buf := make([]byte, size)
 
 			h := blake3.New(32, nil)
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				h.Write(buf)
 			}
 		})
