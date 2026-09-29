@@ -421,7 +421,8 @@ func (or *OutputReader) Read(p []byte) (int, error) {
 
 	for len(p) > 0 {
 		// drain buffered output
-		if or.off >= or.bufStart && or.off-or.bufStart < uint64(or.buflen) { // #nosec G115 -- buflen is a buffer's fill, never negative
+		// #nosec G115 -- buflen is a buffer's fill, never negative
+		if or.off >= or.bufStart && or.off-or.bufStart < uint64(or.buflen) {
 			n := copy(p, or.buf[or.off-or.bufStart:or.buflen])
 			p = p[n:]
 			or.off += uint64(n) // #nosec G115 -- n is what copy returned, never negative
@@ -512,7 +513,9 @@ func (or *OutputReader) Seek(offset int64, whence int) (int64, error) {
 			return 0, errSeekPastEnd
 		}
 
-		off = uint64(offset) - 1 // #nosec G115 -- offset is at most 0 here: the wrap is the point, counting back from the end of the 2^64 - 1 byte stream
+		// #nosec G115 -- offset is at most 0 here: the wrap is the point,
+		// counting back from the end of the 2^64 - 1 byte stream.
+		off = uint64(offset) - 1
 	default:
 		panic("invalid whence")
 	}
@@ -521,7 +524,9 @@ func (or *OutputReader) Seek(offset int64, whence int) (int64, error) {
 	// NOTE: there is no need to update or invalidate the buffer: it caches an
 	// absolute range [bufStart, bufStart+buflen) of the stream, and Read only
 	// serves from it when or.off falls within that range.
-	return int64(or.off), nil // #nosec G115 -- positions past 2^63 - 1, reachable only through SeekEnd, do not fit io.Seeker's int64 and come back negative; the seek itself is exact
+	// #nosec G115 -- positions past 2^63 - 1, reachable only through SeekEnd,
+	// do not fit io.Seeker's int64 and come back negative; the seek is exact.
+	return int64(or.off), nil
 }
 
 // Hasher is a hash.Hash.

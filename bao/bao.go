@@ -171,7 +171,9 @@ func Encode(dst io.WriterAt, data io.Reader, dataLen int64, group int, outboard 
 			return
 		}
 
-		if _, err = dst.WriteAt(p, int64(off)); err != nil { // #nosec G115 -- an offset inside the encoding of an int64-length input: past 2^63 only for exabyte inputs, where WriteAt refuses it
+		// #nosec G115 -- an offset inside the encoding of an int64-length input:
+		// past 2^63 only for exabyte inputs, where WriteAt refuses it.
+		if _, err = dst.WriteAt(p, int64(off)); err != nil {
 			err = fmt.Errorf("bao: write the encoding at offset %d: %w", off, err)
 		}
 	}
@@ -531,7 +533,8 @@ func VerifyChunk(chunks, outboard []byte, group int, offset uint64, root [32]byt
 			return 0 // leaf
 		}
 
-		n := int(bufLen / groupSize) // #nosec G115 -- bufLen is an in-memory slice's length, so the quotient fits an int
+		// #nosec G115 -- bufLen is an in-memory slice's length, so the quotient fits an int
+		n := int(bufLen / groupSize)
 		if bufLen%groupSize == 0 {
 			n--
 		}
@@ -557,7 +560,8 @@ func VerifyChunk(chunks, outboard []byte, group int, offset uint64, root [32]byt
 				return true
 			}
 
-			n := compressGroup(cbuf.Next(int(groupSize)), pos/guts.ChunkSize) // #nosec G115 -- groupSize is ChunkSize shifted by a checked group, a few megabytes at most
+			// #nosec G115 -- groupSize is ChunkSize shifted by a checked group, a few megabytes at most
+			n := compressGroup(cbuf.Next(int(groupSize)), pos/guts.ChunkSize)
 			n.Flags |= flags
 
 			return cv == guts.ChainingValue(n)
