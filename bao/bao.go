@@ -31,6 +31,16 @@ var (
 	errSliceLength = errors.New("invalid slice length")
 )
 
+// The encoding's fixed sizes, in bytes.
+const (
+	// headerSize is the little-endian data length the encoding starts with.
+	headerSize = 8
+	// cvSize is one chaining value: eight little-endian words.
+	cvSize = 32
+	// parentSize is a parent node: its children's two chaining values.
+	parentSize = 2 * cvSize
+)
+
 // checkGroup panics if group is outside [0, MaxGroup]. An out-of-range group
 // is a programming error, not a data error: left unchecked, the shifts and
 // allocations below fail with unrelated runtime panics.
@@ -112,12 +122,12 @@ func EncodedSize(dataLen, group int, outboard bool) int {
 	}
 
 	groupSize := guts.ChunkSize << group
-	size := 8
+	size := headerSize
 
 	if dataLen > 0 {
 		chunks := (dataLen + groupSize - 1) / groupSize
 		cvs := 2*chunks - 2 // no I will not elaborate
-		size += cvs * 32
+		size += cvs * cvSize
 	}
 
 	if !outboard {
@@ -171,7 +181,7 @@ func Encode(dst io.WriterAt, data io.Reader, dataLen int64, group int, outboard 
 	// parentBuf is reused for all parent nodes; it escapes into dst.WriteAt,
 	// so a per-node buffer would mean a heap allocation per node
 	var (
-		parentBuf [64]byte
+		parentBuf [parentSize]byte
 		rec       func(bufLen uint64, flags uint32, off uint64) (uint64, [8]uint32)
 	)
 
@@ -192,18 +202,18 @@ func Encode(dst io.WriterAt, data io.Reader, dataLen int64, group int, outboard 
 		}
 
 		mid := uint64(1) << (bits.Len64(bufLen-1) - 1)
-		lchildren, l := rec(mid, 0, off+64)
+		lchildren, l := rec(mid, 0, off+parentSize)
 
-		llen := lchildren * 32
+		llen := lchildren * cvSize
 		if !outboard {
 			llen += (mid / groupSize) * groupSize
 		}
 
-		rchildren, r := rec(bufLen-mid, 0, off+64+llen)
+		rchildren, r := rec(bufLen-mid, 0, off+parentSize+llen)
 
 		for i := range l {
 			binary.LittleEndian.PutUint32(parentBuf[4*i:], l[i])
-			binary.LittleEndian.PutUint32(parentBuf[32+4*i:], r[i])
+			binary.LittleEndian.PutUint32(parentBuf[cvSize+4*i:], r[i])
 		}
 
 		write(parentBuf[:], off)
@@ -211,10 +221,9 @@ func Encode(dst io.WriterAt, data io.Reader, dataLen int64, group int, outboard 
 		return 2 + lchildren + rchildren, guts.ChainingValue(guts.ParentNode(l, r, &guts.IV, flags))
 	}
 
-	binary.LittleEndian.PutUint64(buf[:8], uint64(dataLen))
-	write(buf[:8], 0)
-
-	_, root := rec(uint64(dataLen), guts.FlagRoot, 8)
+	binary.LittleEndian.PutUint64(buf[:headerSize], uint64(dataLen))
+	write(buf[:headerSize], 0)
+	_, root := rec(uint64(dataLen), guts.FlagRoot, headerSize)
 
 	return *cvToBytes(&root), err
 }
@@ -251,8 +260,8 @@ func Decode(dst io.Writer, data, outboard io.Reader, group int, root [32]byte) (
 		}
 	}
 	readParent := func() (l, r [8]uint32) {
-		read(outboard, buf[:64])
-		return bytesToCV(buf[:32]), bytesToCV(buf[32:])
+		read(outboard, buf[:parentSize])
+		return bytesToCV(buf[:cvSize]), bytesToCV(buf[cvSize:])
 	}
 
 	var (
@@ -283,8 +292,8 @@ func Decode(dst io.Writer, data, outboard io.Reader, group int, root [32]byte) (
 		return guts.ChainingValue(n) == cv && rec(l, mid, 0) && rec(r, bufLen-mid, 0)
 	}
 
-	read(outboard, buf[:8])
-	dataLen := binary.LittleEndian.Uint64(buf[:8])
+	read(outboard, buf[:headerSize])
+	dataLen := binary.LittleEndian.Uint64(buf[:headerSize])
 	ok := rec(bytesToCV(root[:]), dataLen, guts.FlagRoot)
 
 	return ok, err
@@ -367,16 +376,16 @@ func ExtractSlice(dst io.Writer, data, outboard io.Reader, group int, offset, le
 			return
 		}
 
-		read(outboard, 64, inSlice)
+		read(outboard, parentSize, inSlice)
 
 		mid := uint64(1) << (bits.Len64(bufLen-1) - 1)
 		rec(pos, mid)
 		rec(pos+mid, bufLen-mid)
 	}
 
-	read(outboard, 8, true)
+	read(outboard, headerSize, true)
 
-	dataLen := binary.LittleEndian.Uint64(buf[:8])
+	dataLen := binary.LittleEndian.Uint64(buf[:headerSize])
 	if end := offset + length; end < offset || dataLen < end {
 		return errSliceLength
 	}
@@ -408,8 +417,8 @@ func DecodeSlice(dst io.Writer, data io.Reader, group int, offset, length uint64
 		return buf[:n]
 	}
 	readParent := func() (l, r [8]uint32) {
-		read(64)
-		return bytesToCV(buf[:32]), bytesToCV(buf[32:])
+		read(parentSize)
+		return bytesToCV(buf[:cvSize]), bytesToCV(buf[cvSize:])
 	}
 	write := func(p []byte) {
 		if err == nil {
@@ -469,7 +478,7 @@ func DecodeSlice(dst io.Writer, data io.Reader, group int, offset, length uint64
 		return guts.ChainingValue(n) == cv && rec(l, pos, mid, 0) && rec(r, pos+mid, bufLen-mid, 0)
 	}
 
-	dataLen := binary.LittleEndian.Uint64(read(8))
+	dataLen := binary.LittleEndian.Uint64(read(headerSize))
 	if end := offset + length; end < offset || dataLen < end {
 		return false, errSliceLength
 	}
@@ -540,23 +549,23 @@ func VerifyChunk(chunks, outboard []byte, group int, offset uint64, root [32]byt
 		}
 
 		if !inSlice {
-			_ = obuf.Next(64 * nodesWithin(bufLen)) // skip
+			_ = obuf.Next(parentSize * nodesWithin(bufLen)) // skip
 			return true
 		}
 
-		l, r := bytesToCV(obuf.Next(32)), bytesToCV(obuf.Next(32))
+		l, r := bytesToCV(obuf.Next(cvSize)), bytesToCV(obuf.Next(cvSize))
 		n := guts.ParentNode(l, r, &guts.IV, flags)
 		mid := uint64(1) << (bits.Len64(bufLen-1) - 1)
 
 		return guts.ChainingValue(n) == cv && rec(l, pos, mid, 0) && rec(r, pos+mid, bufLen-mid, 0)
 	}
 
-	if obuf.Len() < 8 {
+	if obuf.Len() < headerSize {
 		return false
 	}
 
-	dataLen := binary.LittleEndian.Uint64(obuf.Next(8))
-	if end := offset + length; end < offset || dataLen < end || obuf.Len() != 64*nodesWithin(dataLen) {
+	dataLen := binary.LittleEndian.Uint64(obuf.Next(headerSize))
+	if end := offset + length; end < offset || dataLen < end || obuf.Len() != parentSize*nodesWithin(dataLen) {
 		return false
 	}
 
