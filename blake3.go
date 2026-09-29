@@ -16,7 +16,7 @@
 // The subpackages are [github.com/forkcloser/blake3/bao], verified streaming
 // over BLAKE3's tree, and [github.com/forkcloser/blake3/guts], the tree-hashing
 // primitives both packages are built from.
-package blake3 // import "github.com/forkcloser/blake3"
+package blake3
 
 import (
 	"encoding/binary"
