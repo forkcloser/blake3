@@ -7,7 +7,7 @@ import (
 	"errors"
 	"io"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"strconv"
 	"testing"
@@ -302,27 +302,27 @@ func TestXOFReadPatterns(t *testing.T) {
 	// interleave reads of various sizes (crossing the buffered, direct, and
 	// parallel paths) with seeks, and confirm that the output always matches
 	// the golden stream
-	rng := rand.New(rand.NewSource(0))
+	rng := rand.New(rand.NewPCG(0, 0))
 	xof := blake3.New(0, nil).XOF()
 	off := 0
 
 	for range 500 {
-		if rng.Intn(4) == 0 {
-			off = rng.Intn(len(golden) / 2)
+		if rng.IntN(4) == 0 {
+			off = rng.IntN(len(golden) / 2)
 			xof.Seek(int64(off), io.SeekStart)
 		}
 
 		var readSize int
 
-		switch rng.Intn(4) {
+		switch rng.IntN(4) {
 		case 0:
-			readSize = 1 + rng.Intn(64)
+			readSize = 1 + rng.IntN(64)
 		case 1:
-			readSize = 1 + rng.Intn(2048)
+			readSize = 1 + rng.IntN(2048)
 		case 2:
-			readSize = 1 + rng.Intn(1<<15)
+			readSize = 1 + rng.IntN(1<<15)
 		case 3:
-			readSize = 1 + rng.Intn(1<<19)
+			readSize = 1 + rng.IntN(1<<19)
 		}
 
 		readSize = min(readSize, len(golden)-off)
