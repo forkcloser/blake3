@@ -46,37 +46,6 @@ type Hasher struct {
 	buflen int
 }
 
-func (h *Hasher) hasSubtreeAtHeight(i int) bool {
-	return h.counter&(1<<i) != 0
-}
-
-func (h *Hasher) pushSubtree(cv [8]uint32, height int) {
-	// seek to first open stack slot, merging subtrees as we go
-	i := height
-	for h.hasSubtreeAtHeight(i) {
-		cv = guts.ChainingValue(guts.ParentNode(h.stack[i], cv, &h.key, h.flags))
-		i++
-	}
-
-	h.stack[i] = cv
-	h.counter += 1 << height
-}
-
-// rootNode computes the root of the Merkle tree. It does not modify the
-// stack.
-func (h *Hasher) rootNode() guts.Node {
-	n := guts.CompressChunk(h.buf[:h.buflen], &h.key, h.counter, h.flags)
-	for i := bits.TrailingZeros64(h.counter); i < bits.Len64(h.counter); i++ {
-		if h.hasSubtreeAtHeight(i) {
-			n = guts.ParentNode(h.stack[i], guts.ChainingValue(n), &h.key, h.flags)
-		}
-	}
-
-	n.Flags |= guts.FlagRoot
-
-	return n
-}
-
 // Write implements hash.Hash. It always returns len(p), nil.
 func (h *Hasher) Write(p []byte) (int, error) {
 	lenp := len(p)
@@ -156,6 +125,83 @@ func (h *Hasher) Write(p []byte) (int, error) {
 //     size left ~4% behind upstream.
 const minParallelWriteBytes = 24 * 1024
 
+// Sum implements hash.Hash: it appends the current digest to b and returns
+// the resulting slice, without changing the underlying state. A digest longer
+// than 64 bytes is the first Size() bytes of the XOF stream.
+func (h *Hasher) Sum(b []byte) (sum []byte) {
+	// We need to append h.Size() bytes to b. Reuse b's capacity if possible;
+	// otherwise, allocate a new slice.
+	if total := len(b) + h.Size(); cap(b) >= total {
+		sum = b[:total]
+	} else {
+		sum = make([]byte, total)
+		copy(sum, b)
+	}
+	// Read into the appended portion of sum. Use a low-latency-low-throughput
+	// path for small digests (requiring a single compression), and a
+	// high-latency-high-throughput path for large digests.
+	if dst := sum[len(b):]; len(dst) <= guts.BlockSize {
+		out := guts.WordsToBytes(guts.CompressNode(h.rootNode()))
+		copy(dst, out[:])
+	} else {
+		or := OutputReader{n: h.rootNode()}
+		or.Read(dst)
+	}
+
+	return sum
+}
+
+// Reset implements hash.Hash.
+func (h *Hasher) Reset() {
+	h.counter = 0
+	h.buflen = 0
+}
+
+// BlockSize implements hash.Hash.
+func (*Hasher) BlockSize() int { return guts.BlockSize }
+
+// Size implements hash.Hash.
+func (h *Hasher) Size() int { return h.size }
+
+// XOF returns an OutputReader initialized with the current hash state. The
+// state is captured at the call: later writes to h do not affect the reader.
+func (h *Hasher) XOF() *OutputReader {
+	return &OutputReader{
+		n: h.rootNode(),
+	}
+}
+
+func (h *Hasher) hasSubtreeAtHeight(i int) bool {
+	return h.counter&(1<<i) != 0
+}
+
+func (h *Hasher) pushSubtree(cv [8]uint32, height int) {
+	// seek to first open stack slot, merging subtrees as we go
+	i := height
+	for h.hasSubtreeAtHeight(i) {
+		cv = guts.ChainingValue(guts.ParentNode(h.stack[i], cv, &h.key, h.flags))
+		i++
+	}
+
+	h.stack[i] = cv
+	h.counter += 1 << height
+}
+
+// rootNode computes the root of the Merkle tree. It does not modify the
+// stack.
+func (h *Hasher) rootNode() guts.Node {
+	n := guts.CompressChunk(h.buf[:h.buflen], &h.key, h.counter, h.flags)
+	for i := bits.TrailingZeros64(h.counter); i < bits.Len64(h.counter); i++ {
+		if h.hasSubtreeAtHeight(i) {
+			n = guts.ParentNode(h.stack[i], guts.ChainingValue(n), &h.key, h.flags)
+		}
+	}
+
+	n.Flags |= guts.FlagRoot
+
+	return n
+}
+
 // writeTreesParallel compresses a Write's eigentrees concurrently: each tree
 // of MaxSIMD chunks or more gets a goroutine (a MaxSIMD-chunk tree is ~10 µs
 // of work, worth a thread; larger ones fan out further inside
@@ -230,52 +276,6 @@ func (h *Hasher) writeTreesParallel(eigenbuf []byte, trees []int) {
 
 	for i, height := range trees {
 		h.pushSubtree(cvs[i], height)
-	}
-}
-
-// Sum implements hash.Hash: it appends the current digest to b and returns
-// the resulting slice, without changing the underlying state. A digest longer
-// than 64 bytes is the first Size() bytes of the XOF stream.
-func (h *Hasher) Sum(b []byte) (sum []byte) {
-	// We need to append h.Size() bytes to b. Reuse b's capacity if possible;
-	// otherwise, allocate a new slice.
-	if total := len(b) + h.Size(); cap(b) >= total {
-		sum = b[:total]
-	} else {
-		sum = make([]byte, total)
-		copy(sum, b)
-	}
-	// Read into the appended portion of sum. Use a low-latency-low-throughput
-	// path for small digests (requiring a single compression), and a
-	// high-latency-high-throughput path for large digests.
-	if dst := sum[len(b):]; len(dst) <= 64 {
-		out := guts.WordsToBytes(guts.CompressNode(h.rootNode()))
-		copy(dst, out[:])
-	} else {
-		or := OutputReader{n: h.rootNode()}
-		or.Read(dst)
-	}
-
-	return sum
-}
-
-// Reset implements hash.Hash.
-func (h *Hasher) Reset() {
-	h.counter = 0
-	h.buflen = 0
-}
-
-// BlockSize implements hash.Hash.
-func (h *Hasher) BlockSize() int { return 64 }
-
-// Size implements hash.Hash.
-func (h *Hasher) Size() int { return h.size }
-
-// XOF returns an OutputReader initialized with the current hash state. The
-// state is captured at the call: later writes to h do not affect the reader.
-func (h *Hasher) XOF() *OutputReader {
-	return &OutputReader{
-		n: h.rootNode(),
 	}
 }
 
