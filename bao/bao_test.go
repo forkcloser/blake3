@@ -441,7 +441,7 @@ func TestBaoNegativeDataLen(t *testing.T) {
 	}
 
 	if root != [32]byte{} {
-		t.Errorf("Encode returned a root for a negative dataLen")
+		t.Error("Encode returned a root for a negative dataLen")
 	}
 
 	func() {
