@@ -50,6 +50,8 @@ var testInput = func() []byte {
 }()
 
 func TestVectors(t *testing.T) {
+	t.Parallel()
+
 	for _, vec := range testVectors.Cases {
 		in := testInput[:vec.InputLen]
 
@@ -90,6 +92,8 @@ func TestVectors(t *testing.T) {
 }
 
 func TestXOF(t *testing.T) {
+	t.Parallel()
+
 	for _, vec := range testVectors.Cases {
 		in := testInput[:vec.InputLen]
 
@@ -220,6 +224,8 @@ func TestXOF(t *testing.T) {
 }
 
 func TestXOFSeek(t *testing.T) {
+	t.Parallel()
+
 	// generate golden output, one block at a time
 	golden := make([]byte, 1<<16)
 	n := guts.CompressChunk(nil, &guts.IV, 0, 0)
@@ -287,6 +293,8 @@ func TestXOFSeek(t *testing.T) {
 }
 
 func TestXOFReadPatterns(t *testing.T) {
+	t.Parallel()
+
 	// generate golden output, one block at a time
 	golden := make([]byte, 1<<20)
 	n := guts.CompressChunk(nil, &guts.IV, 0, 0)
@@ -341,6 +349,8 @@ func TestXOFReadPatterns(t *testing.T) {
 }
 
 func TestNewValidation(t *testing.T) {
+	t.Parallel()
+
 	expectPanic := func(desc string, fn func()) {
 		t.Helper()
 
@@ -358,6 +368,8 @@ func TestNewValidation(t *testing.T) {
 }
 
 func TestSum(t *testing.T) {
+	t.Parallel()
+
 	for _, vec := range testVectors.Cases {
 		in := testInput[:vec.InputLen]
 
@@ -392,6 +404,8 @@ func TestSum(t *testing.T) {
 }
 
 func TestReset(t *testing.T) {
+	t.Parallel()
+
 	for _, vec := range testVectors.Cases {
 		in := testInput[:vec.InputLen]
 
@@ -414,6 +428,8 @@ func TestReset(t *testing.T) {
 }
 
 func TestEigentrees(t *testing.T) {
+	t.Parallel()
+
 	for i := range uint64(64) {
 		for j := range uint64(64) {
 			trees := guts.Eigentrees(i, j)
@@ -431,6 +447,8 @@ func TestEigentrees(t *testing.T) {
 }
 
 func TestSplitWrite(t *testing.T) {
+	t.Parallel()
+
 	in := make([]byte, 2048)
 	for i := range in {
 		in[i] = byte(i)

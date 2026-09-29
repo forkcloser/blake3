@@ -25,6 +25,8 @@ import (
 // place the large Write at counters 0..k so the height sequence varies; and
 // the keyed flag rides along.
 func TestEigentreeWriteEquivalence(t *testing.T) {
+	t.Parallel()
+
 	const maxLen = 300 * guts.ChunkSize
 
 	in := make([]byte, maxLen)

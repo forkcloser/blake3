@@ -17,6 +17,8 @@ import (
 func toHex(data []byte) string { return hex.EncodeToString(data) }
 
 func TestBaoGolden(t *testing.T) {
+	t.Parallel()
+
 	data, err := os.ReadFile("../testdata/vectors.json")
 	if err != nil {
 		t.Fatal(err)
@@ -69,6 +71,8 @@ func TestBaoGolden(t *testing.T) {
 }
 
 func TestBaoInterleaved(t *testing.T) {
+	t.Parallel()
+
 	data := make([]byte, 1<<20)
 	blake3.New(0, nil).XOF().Read(data)
 
@@ -114,6 +118,8 @@ func TestBaoInterleaved(t *testing.T) {
 }
 
 func TestBaoOutboard(t *testing.T) {
+	t.Parallel()
+
 	data := make([]byte, 1<<20)
 	blake3.New(0, nil).XOF().Read(data)
 
@@ -147,6 +153,8 @@ func TestBaoOutboard(t *testing.T) {
 }
 
 func TestBaoChunkGroup(t *testing.T) {
+	t.Parallel()
+
 	// from https://github.com/n0-computer/abao/blob/9b756ec8097afc782d76f7aec0a5ac9f4b82329a/tests/test_vectors.json
 	const group = 4 // 16 KiB
 
@@ -189,6 +197,8 @@ func TestBaoChunkGroup(t *testing.T) {
 }
 
 func TestBaoVerifyChunk(t *testing.T) {
+	t.Parallel()
+
 	data := make([]byte, 1<<18)
 	blake3.New(0, nil).XOF().Read(data)
 
@@ -233,6 +243,8 @@ func TestBaoVerifyChunk(t *testing.T) {
 }
 
 func TestBaoInvalidSliceBounds(t *testing.T) {
+	t.Parallel()
+
 	data := make([]byte, 4096)
 	blake3.New(0, nil).XOF().Read(data)
 	enc, root := bao.EncodeBuf(data, 0, false)
@@ -260,6 +272,8 @@ func TestBaoInvalidSliceBounds(t *testing.T) {
 }
 
 func TestBaoStreaming(t *testing.T) {
+	t.Parallel()
+
 	data := make([]byte, 1<<20)
 	blake3.New(0, nil).XOF().Read(data)
 
@@ -300,6 +314,8 @@ func TestBaoStreaming(t *testing.T) {
 }
 
 func TestBaoSlice(t *testing.T) {
+	t.Parallel()
+
 	data := make([]byte, 1<<20)
 	blake3.New(0, nil).XOF().Read(data)
 
@@ -370,6 +386,8 @@ type discardAt struct{}
 func (discardAt) WriteAt(p []byte, _ int64) (int, error) { return len(p), nil }
 
 func TestBaoGroupRange(t *testing.T) {
+	t.Parallel()
+
 	data := make([]byte, 3000)
 	enc, root := bao.EncodeBuf(data, 0, false)
 	obd, _ := bao.EncodeBuf(data, 0, true)
@@ -415,6 +433,8 @@ func TestBaoGroupRange(t *testing.T) {
 }
 
 func TestBaoNegativeDataLen(t *testing.T) {
+	t.Parallel()
+
 	root, err := bao.Encode(discardAt{}, bytes.NewReader(nil), -1, 0, false)
 	if err == nil {
 		t.Fatal("Encode accepted a negative dataLen")
