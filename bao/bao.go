@@ -24,6 +24,13 @@ import (
 // every platform.
 const MaxGroup = 20
 
+var (
+	// errNegativeLength is Encode's refusal of a negative dataLen.
+	errNegativeLength = errors.New("bao: negative data length")
+	// errSliceLength is a slice that does not fit the encoded data.
+	errSliceLength = errors.New("invalid slice length")
+)
+
 // checkGroup panics if group is outside [0, MaxGroup]. An out-of-range group
 // is a programming error, not a data error: left unchecked, the shifts and
 // allocations below fail with unrelated runtime panics.
@@ -133,7 +140,7 @@ func Encode(dst io.WriterAt, data io.Reader, dataLen int64, group int, outboard 
 	checkGroup(group)
 
 	if dataLen < 0 {
-		return [32]byte{}, errors.New("bao: negative data length")
+		return [32]byte{}, errNegativeLength
 	}
 
 	groupSize := uint64(guts.ChunkSize << group)
@@ -371,7 +378,7 @@ func ExtractSlice(dst io.Writer, data, outboard io.Reader, group int, offset, le
 
 	dataLen := binary.LittleEndian.Uint64(buf[:8])
 	if end := offset + length; end < offset || dataLen < end {
-		return errors.New("invalid slice length")
+		return errSliceLength
 	}
 
 	rec(0, dataLen)
@@ -464,7 +471,7 @@ func DecodeSlice(dst io.Writer, data io.Reader, group int, offset, length uint64
 
 	dataLen := binary.LittleEndian.Uint64(read(8))
 	if end := offset + length; end < offset || dataLen < end {
-		return false, errors.New("invalid slice length")
+		return false, errSliceLength
 	}
 
 	ok := rec(bytesToCV(root[:]), 0, dataLen, guts.FlagRoot)
