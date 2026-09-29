@@ -144,8 +144,10 @@ func (h *Hasher) Sum(b []byte) (sum []byte) {
 		out := guts.WordsToBytes(guts.CompressNode(h.rootNode()))
 		copy(dst, out[:])
 	} else {
+		// From offset 0 the read cannot reach the end of the stream, the
+		// one case in which Read returns less than asked, or an error.
 		or := OutputReader{n: h.rootNode()}
-		or.Read(dst)
+		_, _ = or.Read(dst)
 	}
 
 	return sum
@@ -377,7 +379,8 @@ func DeriveKey(subKey []byte, ctx string, srcKey []byte) {
 	h = newHasher(ivWords, guts.FlagDeriveKeyMaterial, 0)
 	// derive the subKey
 	h.Write(srcKey)
-	h.XOF().Read(subKey)
+	// From offset 0 the read cannot reach the end of the stream; see Sum.
+	_, _ = h.XOF().Read(subKey)
 }
 
 // The errors Seek returns for a position outside the stream.
