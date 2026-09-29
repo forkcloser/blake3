@@ -104,7 +104,9 @@ func TestXOF(t *testing.T) {
 		h.Write(in)
 
 		var xofBuf bytes.Buffer
-		io.CopyBuffer(&xofBuf, io.LimitReader(h.XOF(), 4096), make([]byte, 7))
+		if _, err := io.CopyBuffer(&xofBuf, io.LimitReader(h.XOF(), 4096), make([]byte, 7)); err != nil {
+			t.Fatal(err)
+		}
 
 		if out := toHex(xofBuf.Bytes()[:len(vec.Hash)/2]); out != vec.Hash {
 			t.Errorf(
@@ -134,8 +136,13 @@ func TestXOF(t *testing.T) {
 			offset, _ := outR.Seek(s.offset, s.whence)
 			n, _ := outR.Read(outRead)
 
-			xof.Seek(s.offset, s.whence)
-			xof.Read(xofRead[:n])
+			if _, err := xof.Seek(s.offset, s.whence); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := xof.Read(xofRead[:n]); err != nil {
+				t.Fatal(err)
+			}
 
 			if !bytes.Equal(outRead[:n], xofRead[:n]) {
 				t.Errorf(
@@ -162,7 +169,9 @@ func TestXOF(t *testing.T) {
 		}
 
 		got := make([]byte, 1<<20)
-		blake3.New(0, nil).XOF().Read(got)
+		if _, err := blake3.New(0, nil).XOF().Read(got); err != nil {
+			t.Fatal(err)
+		}
 
 		if !bytes.Equal(golden, got) {
 			t.Error("XOF output did not match golden output")
@@ -173,7 +182,9 @@ func TestXOF(t *testing.T) {
 	xof := blake3.New(0, nil).XOF()
 	buf := make([]byte, 1024)
 
-	xof.Seek(-1000, io.SeekEnd)
+	if _, err := xof.Seek(-1000, io.SeekEnd); err != nil {
+		t.Fatal(err)
+	}
 
 	n, err := xof.Read(buf)
 	if n != 1000 || err != nil {
@@ -191,7 +202,9 @@ func TestXOF(t *testing.T) {
 		t.Error("expected invalid offset error, got nil")
 	}
 
-	xof.Seek(0, io.SeekStart)
+	if _, err = xof.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
 
 	_, err = xof.Seek(-1, io.SeekCurrent)
 	if err == nil {
@@ -203,7 +216,9 @@ func TestXOF(t *testing.T) {
 		t.Error("expected past-end error, got nil")
 	}
 
-	xof.Seek(-10, io.SeekEnd)
+	if _, err = xof.Seek(-10, io.SeekEnd); err != nil {
+		t.Fatal(err)
+	}
 
 	_, err = xof.Seek(math.MaxInt64, io.SeekCurrent)
 	if err == nil {
@@ -214,7 +229,7 @@ func TestXOF(t *testing.T) {
 	didPanic := func() (p bool) {
 		defer func() { p = recover() != nil }()
 
-		xof.Seek(0, 17)
+		_, _ = xof.Seek(0, 17)
 
 		return p
 	}()
@@ -256,10 +271,21 @@ func TestXOFSeek(t *testing.T) {
 		}
 	}
 
-	xof.Seek(0, io.SeekStart)
-	io.ReadFull(xof, buf) // off = 100
-	xof.Seek(100, io.SeekCurrent)
-	io.ReadFull(xof, buf) // off = 300
+	if _, err := xof.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := io.ReadFull(xof, buf); err != nil { // off = 100
+		t.Fatal(err)
+	}
+
+	if _, err := xof.Seek(100, io.SeekCurrent); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := io.ReadFull(xof, buf); err != nil { // off = 300
+		t.Fatal(err)
+	}
 
 	if exp := golden[200:][:len(buf)]; !bytes.Equal(buf, exp) {
 		t.Errorf("Seek(100, io.SeekCurrent): expected %x..., got %x...", exp[:8], buf[:8])
@@ -282,7 +308,9 @@ func TestXOFSeek(t *testing.T) {
 	}
 
 	endGolden = endGolden[off%guts.BlockSize:][:rem]
-	xof.Seek(-rem, io.SeekEnd)
+	if _, err := xof.Seek(-rem, io.SeekEnd); err != nil {
+		t.Fatal(err)
+	}
 
 	end := make([]byte, rem)
 	if _, err := io.ReadFull(xof, end); err != nil {
@@ -317,7 +345,9 @@ func TestXOFReadPatterns(t *testing.T) {
 	for range 500 {
 		if rng.IntN(4) == 0 {
 			off = rng.IntN(len(golden) / 2)
-			xof.Seek(int64(off), io.SeekStart)
+			if _, err := xof.Seek(int64(off), io.SeekStart); err != nil {
+				t.Fatal(err)
+			}
 		}
 
 		var readSize int
@@ -477,7 +507,10 @@ func (nopReader) Read(p []byte) (int, error) { return len(p), nil }
 func BenchmarkWrite(b *testing.B) {
 	b.ReportAllocs()
 	b.SetBytes(1024)
-	io.CopyN(blake3.New(0, nil), nopReader{}, int64(b.N*1024))
+
+	if _, err := io.CopyN(blake3.New(0, nil), nopReader{}, int64(b.N*1024)); err != nil {
+		b.Fatal(err)
+	}
 }
 
 func BenchmarkXOF(b *testing.B) {
@@ -489,8 +522,8 @@ func BenchmarkXOF(b *testing.B) {
 
 			xof := blake3.New(0, nil).XOF()
 			for range b.N {
-				xof.Seek(0, 0)
-				xof.Read(buf)
+				_, _ = xof.Seek(0, 0)
+				_, _ = xof.Read(buf)
 			}
 		})
 	}
