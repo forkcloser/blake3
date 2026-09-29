@@ -26,6 +26,7 @@ import (
 	"math"
 	"math/bits"
 	"runtime"
+	"slices"
 	"sync"
 
 	"github.com/forkcloser/blake3/guts"
@@ -129,14 +130,8 @@ const minParallelWriteBytes = 24 * 1024
 // the resulting slice, without changing the underlying state. A digest longer
 // than 64 bytes is the first Size() bytes of the XOF stream.
 func (h *Hasher) Sum(b []byte) (sum []byte) {
-	// We need to append h.Size() bytes to b. Reuse b's capacity if possible;
-	// otherwise, allocate a new slice.
-	if total := len(b) + h.Size(); cap(b) >= total {
-		sum = b[:total]
-	} else {
-		sum = make([]byte, total)
-		copy(sum, b)
-	}
+	// Append h.Size() bytes to b, reusing b's capacity when it has room.
+	sum = slices.Grow(b, h.Size())[:len(b)+h.Size()]
 	// Read into the appended portion of sum. Use a low-latency-low-throughput
 	// path for small digests (requiring a single compression), and a
 	// high-latency-high-throughput path for large digests.
