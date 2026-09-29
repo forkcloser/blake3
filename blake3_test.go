@@ -470,7 +470,7 @@ func BenchmarkXOF(b *testing.B) {
 			buf := make([]byte, size)
 
 			xof := blake3.New(0, nil).XOF()
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				xof.Seek(0, 0)
 				xof.Read(buf)
 			}
@@ -485,7 +485,7 @@ func BenchmarkSum256(b *testing.B) {
 			b.SetBytes(size)
 
 			buf := make([]byte, size)
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				blake3.Sum256(buf)
 			}
 		})
