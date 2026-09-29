@@ -138,7 +138,7 @@ func CompressEigentree(buf []byte, key *[8]uint32, counter uint64, flags uint32)
 		}
 
 		const groupsPerGoroutine = minParallelBytes / (MaxSIMD * ChunkSize)
-		if par := min(groups/groupsPerGoroutine, uint64(runtime.NumCPU())); par > 1 {
+		if par := min(groups/groupsPerGoroutine, uint64(runtime.NumCPU())); par > 1 { // #nosec G115 -- NumCPU is a small positive count
 			// Deal groups out in par near-equal contiguous runs; the
 			// remainder folds into the runs rather than a second spawn.
 			per, extra := groups/par, groups%par

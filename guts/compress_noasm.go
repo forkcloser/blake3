@@ -36,7 +36,7 @@ func CompressChunk(chunk []byte, key *[8]uint32, counter uint64, flags uint32) N
 	}
 	// pad last block with zeros
 	block = [BlockSize]byte{}
-	n.BlockLen = uint32(copy(block[:], chunk))
+	n.BlockLen = uint32(copy(block[:], chunk)) // #nosec G115 -- copy into a BlockSize array, at most 64
 	n.Block = BytesToWords(block)
 	n.Flags |= FlagChunkEnd
 

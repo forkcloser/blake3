@@ -24,7 +24,7 @@ func CompressNode(n Node) (out [16]uint32) {
 
 	// round 1 (also initializes state)
 	// columns
-	s0, s4, s8, s12 := g(n.CV[0], n.CV[4], IV[0], uint32(n.Counter), n.Block[0], n.Block[1])
+	s0, s4, s8, s12 := g(n.CV[0], n.CV[4], IV[0], uint32(n.Counter), n.Block[0], n.Block[1]) // #nosec G115 -- the counter's low word, as BLAKE3 splits it; the next line takes the high one
 	s1, s5, s9, s13 := g(n.CV[1], n.CV[5], IV[1], uint32(n.Counter>>32), n.Block[2], n.Block[3])
 	s2, s6, s10, s14 := g(n.CV[2], n.CV[6], IV[2], n.BlockLen, n.Block[4], n.Block[5])
 	s3, s7, s11, s15 := g(n.CV[3], n.CV[7], IV[3], n.Flags, n.Block[6], n.Block[7])

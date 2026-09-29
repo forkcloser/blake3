@@ -33,7 +33,7 @@ func compressBufferAVX512(
 	var cvs [MaxSIMD][8]uint32
 	compressChunksAVX512(&cvs, buf, key, counter, flags)
 
-	numChunks := uint64(buflen / ChunkSize)
+	numChunks := uint64(buflen / ChunkSize) // #nosec G115 -- buflen is a buffer's length, never negative
 	if buflen%ChunkSize != 0 {
 		// use non-asm for remainder
 		partialChunk := buf[buflen-buflen%ChunkSize : buflen]
@@ -47,11 +47,11 @@ func compressBufferAVX512(
 func compressBufferAVX2(buf *[MaxSIMD * ChunkSize]byte, buflen int, key *[8]uint32, counter uint64, flags uint32) Node {
 	var cvs [MaxSIMD][8]uint32
 
-	cvHalves := (*[2][8][8]uint32)(unsafe.Pointer(&cvs))
-	bufHalves := (*[2][8 * ChunkSize]byte)(unsafe.Pointer(buf))
+	cvHalves := (*[2][8][8]uint32)(unsafe.Pointer(&cvs))        // #nosec G103 -- the same memory viewed as an array of the same size
+	bufHalves := (*[2][8 * ChunkSize]byte)(unsafe.Pointer(buf)) // #nosec G103 -- the same memory viewed as an array of the same size
 	compressChunksAVX2(&cvHalves[0], &bufHalves[0], key, counter, flags)
 
-	numChunks := uint64(buflen / ChunkSize)
+	numChunks := uint64(buflen / ChunkSize) // #nosec G115 -- buflen is a buffer's length, never negative
 	if numChunks > 8 {
 		compressChunksAVX2(&cvHalves[1], &bufHalves[1], key, counter+8, flags)
 	}
@@ -96,7 +96,7 @@ func CompressChunk(chunk []byte, key *[8]uint32, counter uint64, flags uint32) N
 		Flags:    flags | FlagChunkStart,
 	}
 
-	blockBytes := (*[64]byte)(unsafe.Pointer(&n.Block))[:]
+	blockBytes := (*[64]byte)(unsafe.Pointer(&n.Block))[:] // #nosec G103 -- the same bytes viewed as words; amd64 is little-endian
 	for len(chunk) > BlockSize {
 		copy(blockBytes, chunk)
 		chunk = chunk[BlockSize:]
@@ -107,7 +107,7 @@ func CompressChunk(chunk []byte, key *[8]uint32, counter uint64, flags uint32) N
 	n.Block = [16]uint32{}
 
 	copy(blockBytes, chunk)
-	n.BlockLen = uint32(len(chunk))
+	n.BlockLen = uint32(len(chunk)) // #nosec G115 -- the last block, at most BlockSize bytes
 	n.Flags |= FlagChunkEnd
 
 	return n
@@ -120,11 +120,11 @@ func CompressBlocks(out *[MaxSIMD * BlockSize]byte, n Node) {
 	case haveAVX512:
 		compressBlocksAVX512(out, &n.Block, &n.CV, n.Counter, n.BlockLen, n.Flags)
 	case haveAVX2:
-		outs := (*[2][512]byte)(unsafe.Pointer(out))
+		outs := (*[2][512]byte)(unsafe.Pointer(out)) // #nosec G103 -- the same memory viewed as an array of the same size
 		compressBlocksAVX2(&outs[0], &n.Block, &n.CV, n.Counter, n.BlockLen, n.Flags)
 		compressBlocksAVX2(&outs[1], &n.Block, &n.CV, n.Counter+8, n.BlockLen, n.Flags)
 	default:
-		outs := (*[MaxSIMD][64]byte)(unsafe.Pointer(out))
+		outs := (*[MaxSIMD][64]byte)(unsafe.Pointer(out)) // #nosec G103 -- the same memory viewed as an array of the same size
 		compressBlocksGeneric(outs, n)
 	}
 }
@@ -140,7 +140,7 @@ func CompressBlocksN(out *[MaxSIMD * BlockSize]byte, n Node, numBlocks int) int 
 		return MaxSIMD
 	}
 
-	outs := (*[MaxSIMD][64]byte)(unsafe.Pointer(out))
+	outs := (*[MaxSIMD][64]byte)(unsafe.Pointer(out)) // #nosec G103 -- the same memory viewed as an array of the same size
 	for i := range numBlocks {
 		outs[i] = WordsToBytes(CompressNode(n))
 		n.Counter++
@@ -158,10 +158,10 @@ func mergeSubtrees(cvs *[MaxSIMD][8]uint32, numCVs uint64, key *[8]uint32, flags
 
 	for numCVs > 2 {
 		if numCVs%2 == 0 {
-			compressParentsAVX2((*[8][8]uint32)(unsafe.Pointer(cvs)), cvs, key, flags)
+			compressParentsAVX2((*[8][8]uint32)(unsafe.Pointer(cvs)), cvs, key, flags) // #nosec G103 -- the first eight chaining values, which the kernel overwrites in place
 		} else {
 			keep := cvs[numCVs-1]
-			compressParentsAVX2((*[8][8]uint32)(unsafe.Pointer(cvs)), cvs, key, flags)
+			compressParentsAVX2((*[8][8]uint32)(unsafe.Pointer(cvs)), cvs, key, flags) // #nosec G103 -- the first eight chaining values, which the kernel overwrites in place
 			cvs[numCVs/2] = keep
 			numCVs++
 		}
@@ -174,10 +174,10 @@ func mergeSubtrees(cvs *[MaxSIMD][8]uint32, numCVs uint64, key *[8]uint32, flags
 
 // BytesToWords converts an array of 64 bytes to an array of 16 bytes.
 func BytesToWords(bytes [64]byte) [16]uint32 {
-	return *(*[16]uint32)(unsafe.Pointer(&bytes))
+	return *(*[16]uint32)(unsafe.Pointer(&bytes)) // #nosec G103 -- the same bytes viewed as words; amd64 is little-endian
 }
 
 // WordsToBytes converts an array of 16 words to an array of 64 bytes.
 func WordsToBytes(words [16]uint32) [64]byte {
-	return *(*[64]byte)(unsafe.Pointer(&words))
+	return *(*[64]byte)(unsafe.Pointer(&words)) // #nosec G103 -- the same bytes viewed as words; amd64 is little-endian
 }
