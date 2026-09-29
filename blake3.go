@@ -519,5 +519,5 @@ func (or *OutputReader) Seek(offset int64, whence int) (int64, error) {
 	return int64(or.off), nil // #nosec G115 -- positions past 2^63 - 1, reachable only through SeekEnd, do not fit io.Seeker's int64 and come back negative; the seek itself is exact
 }
 
-// ensure that Hasher implements hash.Hash
+// Hasher is a hash.Hash.
 var _ hash.Hash = (*Hasher)(nil)
