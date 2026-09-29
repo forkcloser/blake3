@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"math/bits"
 
@@ -166,8 +167,12 @@ func Encode(dst io.WriterAt, data io.Reader, dataLen int64, group int, outboard 
 		return p
 	}
 	write := func(p []byte, off uint64) {
-		if err == nil {
-			_, err = dst.WriteAt(p, int64(off)) // #nosec G115 -- an offset inside the encoding of an int64-length input: past 2^63 only for exabyte inputs, where WriteAt refuses it
+		if err != nil {
+			return
+		}
+
+		if _, err = dst.WriteAt(p, int64(off)); err != nil { // #nosec G115 -- an offset inside the encoding of an int64-length input: past 2^63 only for exabyte inputs, where WriteAt refuses it
+			err = fmt.Errorf("bao: write the encoding at offset %d: %w", off, err)
 		}
 	}
 
@@ -255,8 +260,12 @@ func Decode(dst io.Writer, data, outboard io.Reader, group int, root [32]byte) (
 		return p
 	}
 	write := func(w io.Writer, p []byte) {
-		if err == nil {
-			_, err = w.Write(p)
+		if err != nil {
+			return
+		}
+
+		if _, err = w.Write(p); err != nil {
+			err = fmt.Errorf("bao: write verified data: %w", err)
 		}
 	}
 	readParent := func() (l, r [8]uint32) {
@@ -357,7 +366,9 @@ func ExtractSlice(dst io.Writer, data, outboard io.Reader, group int, offset, le
 		if err == nil {
 			_, err = io.ReadFull(r, buf[:n])
 			if err == nil && emit {
-				_, err = dst.Write(buf[:n])
+				if _, err = dst.Write(buf[:n]); err != nil {
+					err = fmt.Errorf("bao: write the slice: %w", err)
+				}
 			}
 		}
 	}
@@ -421,8 +432,12 @@ func DecodeSlice(dst io.Writer, data io.Reader, group int, offset, length uint64
 		return bytesToCV(buf[:cvSize]), bytesToCV(buf[cvSize:])
 	}
 	write := func(p []byte) {
-		if err == nil {
-			_, err = dst.Write(p)
+		if err != nil {
+			return
+		}
+
+		if _, err = dst.Write(p); err != nil {
+			err = fmt.Errorf("bao: write verified data: %w", err)
 		}
 	}
 
