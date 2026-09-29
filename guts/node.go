@@ -46,6 +46,8 @@ const (
 )
 
 // IV is the BLAKE3 initialization vector.
+//
+//nolint:gochecknoglobals // exported: an array cannot be a constant, and callers building their own trees read it
 var IV = [8]uint32{
 	0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A,
 	0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19,

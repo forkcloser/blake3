@@ -10,6 +10,8 @@ import "golang.org/x/sys/cpu"
 
 // Both flags already fold in OS register support (XGETBV, and the sysctl
 // probe on darwin), so no per-OS fallback is needed here.
+//
+//nolint:gochecknoglobals // the CPU's features, detected once at init and only read after
 var (
 	haveAVX2   = cpu.X86.HasAVX2
 	haveAVX512 = cpu.X86.HasAVX512F
