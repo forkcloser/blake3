@@ -513,5 +513,5 @@ func (or *OutputReader) Seek(offset int64, whence int) (int64, error) {
 	return int64(or.off), nil
 }
 
-// ensure that Hasher implements hash.Hash
+// Hasher is a hash.Hash.
 var _ hash.Hash = (*Hasher)(nil)
