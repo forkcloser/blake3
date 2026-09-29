@@ -5,6 +5,8 @@ import (
 )
 
 // CompressNode compresses a node into a 16-word output.
+//
+//nolint:funlen // the seven rounds and the permutations between them are unrolled on purpose; see the NOTE below
 func CompressNode(n Node) (out [16]uint32) {
 	g := func(a, b, c, d, mx, my uint32) (uint32, uint32, uint32, uint32) {
 		a += b + mx
