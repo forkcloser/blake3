@@ -3,10 +3,12 @@
 import '.limen/just/main.just'
 
 # The FIRST recipe defined here becomes `just`'s default.
-lint: do::lint::go::default do::lint::go::bce do::lint::go::escape do::lint::go::deadcode do::lint::default lint-generated
+lint: do::lint::go::default do::lint::go::deadcode do::lint::default lint-generated
 fix: do::fix::go::default do::fix::default
 test: simd-info do::test::go::unit do::test::go::race
-bench: do::test::go::bench
+# The security workflow runs `just security`.
+security: do::security::default
+bench: do::perf::go::bench
 
 # avo lives in its own module (avo/go.mod) so it never enters the main
 # module's graph — do not fold it into the root go.mod.
