@@ -1,0 +1,27 @@
+# This project's carve-outs from the Go lint baseline (.limen/lint-go.yaml):
+# the baseline's sections, in its shape, holding only what this project adds,
+# changes or takes out (book/per-language.md, "one baseline, per-project
+# carve-outs"). `just do lint go` renders the two on every run.
+golangci:
+  linters:
+    disable:
+      # A fork of a hash implementation written in the specification's
+      # names: s0 to s15 for the state words, cv for a chaining value, n for a
+      # node. varnamelen reports 38 of them in production code, and renaming
+      # them would stop the code reading like the BLAKE3 and Bao
+      # specifications it is checked against. Forks may disable a linter when
+      # limen has the data; it does.
+      - varnamelen
+    settings:
+      errcheck:
+        exclude-functions:
+          # Hasher.Write never fails, as hash.Hash's contract says; errcheck
+          # exempts hash.Hash.Write through the interface but not on the
+          # concrete type.
+          - (*github.com/forkcloser/blake3.Hasher).Write
+      depguard:
+        rules:
+          main:
+            # CPU feature detection for the SIMD kernels.
+            allow:
+              - golang.org/x/sys/cpu

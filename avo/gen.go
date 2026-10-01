@@ -56,7 +56,11 @@ func genGlobals() {
 }
 
 func genCompressBlocksAVX512() {
-	TEXT("compressBlocksAVX512", NOSPLIT, "func(out *[1024]byte, block *[16]uint32, cv *[8]uint32, counter uint64, blockLen uint32, flags uint32)")
+	TEXT(
+		"compressBlocksAVX512",
+		NOSPLIT,
+		"func(out *[1024]byte, block *[16]uint32, cv *[8]uint32, counter uint64, blockLen uint32, flags uint32)",
+	)
 	out := Mem{Base: Load(Param("out"), GP64())}
 	block := Mem{Base: Load(Param("block"), GP64())}
 	cv := Mem{Base: Load(Param("cv"), GP64())}
@@ -114,7 +118,11 @@ func genCompressBlocksAVX512() {
 }
 
 func genCompressChunksAVX512() {
-	TEXT("compressChunksAVX512", NOSPLIT, "func(cvs *[16][8]uint32, buf *[16384]byte, key *[8]uint32, counter uint64, flags uint32)")
+	TEXT(
+		"compressChunksAVX512",
+		NOSPLIT,
+		"func(cvs *[16][8]uint32, buf *[16384]byte, key *[8]uint32, counter uint64, flags uint32)",
+	)
 	cvs := Mem{Base: Load(Param("cvs"), GP64())}
 	buf := Mem{Base: Load(Param("buf"), GP64())}
 	key := Mem{Base: Load(Param("key"), GP64())}
@@ -236,7 +244,11 @@ func performRoundsAVX512(vs, mv [16]VecVirtual) {
 }
 
 func genCompressBlocksAVX2() {
-	TEXT("compressBlocksAVX2", NOSPLIT, "func(out *[512]byte, block *[16]uint32, cv *[8]uint32, counter uint64, blockLen uint32, flags uint32)")
+	TEXT(
+		"compressBlocksAVX2",
+		NOSPLIT,
+		"func(out *[512]byte, block *[16]uint32, cv *[8]uint32, counter uint64, blockLen uint32, flags uint32)",
+	)
 	out := Mem{Base: Load(Param("out"), GP64())}
 	block := Mem{Base: Load(Param("block"), GP64())}
 	cv := Mem{Base: Load(Param("cv"), GP64())}
@@ -304,7 +316,11 @@ func genCompressBlocksAVX2() {
 }
 
 func genCompressChunksAVX2() {
-	TEXT("compressChunksAVX2", NOSPLIT, "func(cvs *[8][8]uint32, buf *[8192]byte, key *[8]uint32, counter uint64, flags uint32)")
+	TEXT(
+		"compressChunksAVX2",
+		NOSPLIT,
+		"func(cvs *[8][8]uint32, buf *[8192]byte, key *[8]uint32, counter uint64, flags uint32)",
+	)
 	cvs := Mem{Base: Load(Param("cvs"), GP64())}
 	buf := Mem{Base: Load(Param("buf"), GP64())}
 	key := Mem{Base: Load(Param("key"), GP64())}
@@ -386,7 +402,11 @@ func genCompressChunksAVX2() {
 }
 
 func genCompressParentsAVX2() {
-	TEXT("compressParentsAVX2", NOSPLIT, "func(parents *[8][8]uint32, cvs *[16][8]uint32, key *[8]uint32, flags uint32)")
+	TEXT(
+		"compressParentsAVX2",
+		NOSPLIT,
+		"func(parents *[8][8]uint32, cvs *[16][8]uint32, key *[8]uint32, flags uint32)",
+	)
 	parents := Mem{Base: Load(Param("parents"), GP64())}
 	cvs := Mem{Base: Load(Param("cvs"), GP64())}
 	key := Mem{Base: Load(Param("key"), GP64())}
