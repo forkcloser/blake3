@@ -11,7 +11,6 @@ Desktop.ini
 
 # Build output and Go artifacts
 /build
-/tmp
 
 # Scratch / work-in-progress files
 # *.local
@@ -51,3 +50,7 @@ Desktop.ini
 # yarn-debug.log*
 # yarn-error.log*
 # pnpm-debug.log*
+
+# Required by limen (book/mandatory-files.md, ".gitignore").
+/_scratch
+.claude
