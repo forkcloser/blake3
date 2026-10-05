@@ -10,6 +10,15 @@ the one removal listed below.
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-05
+
+### Changed
+
+- `bao.Encode`, `Decode`, `ExtractSlice` and `DecodeSlice` say what they
+  were writing when the destination writer fails: the encoding and its
+  offset, the verified data, or the slice. The writer's error stays
+  wrapped, so `errors.Is` and `errors.As` match it as before.
+
 ## [1.0.0] - 2026-09-13
 
 ### Fixed
