@@ -34,6 +34,7 @@ import (
 
 	"github.com/forkcloser/blake3"
 	"github.com/forkcloser/blake3/guts"
+	"github.com/forkcloser/blake3/internal/refimpl"
 )
 
 // cVectors is testdata/vectors.json, the reference implementation's test
@@ -113,24 +114,24 @@ func TestContractVectors(t *testing.T) {
 		wantHash, wantKeyed, wantDerived := fromHex(t, vec.Hash), fromHex(t, vec.KeyedHash), fromHex(t, vec.DeriveKey)
 
 		// the reference port
-		ref := newRefHasher()
-		ref.update(in)
+		ref := refimpl.New()
+		ref.Update(in)
 
-		if got := ref.finalize(0, len(wantHash)); !bytes.Equal(got, wantHash) {
+		if got := ref.Finalize(0, len(wantHash)); !bytes.Equal(got, wantHash) {
 			t.Fatalf("len %d: the reference port disagrees with the cVectors", vec.InputLen)
 		}
 
-		ref = newRefKeyed(key32)
-		ref.update(in)
+		ref = refimpl.NewKeyed(key32)
+		ref.Update(in)
 
-		if got := ref.finalize(0, len(wantKeyed)); !bytes.Equal(got, wantKeyed) {
+		if got := ref.Finalize(0, len(wantKeyed)); !bytes.Equal(got, wantKeyed) {
 			t.Fatalf("len %d: the reference port's keyed hash disagrees with the cVectors", vec.InputLen)
 		}
 
-		ref = newRefDeriveKey(vectorsContext)
-		ref.update(in)
+		ref = refimpl.NewDeriveKey(vectorsContext)
+		ref.Update(in)
 
-		if got := ref.finalize(0, len(wantDerived)); !bytes.Equal(got, wantDerived) {
+		if got := ref.Finalize(0, len(wantDerived)); !bytes.Equal(got, wantDerived) {
 			t.Fatalf("len %d: the reference port's derived key disagrees with the cVectors", vec.InputLen)
 		}
 
@@ -179,8 +180,8 @@ func TestContractHashHash(t *testing.T) {
 	t.Parallel()
 
 	in := cInput(3*guts.ChunkSize + 7)
-	want := refHash(in, 32)
-	wantHalf := refHash(in[:guts.ChunkSize+1], 32)
+	want := refimpl.Hash(in, 32)
+	wantHalf := refimpl.Hash(in[:guts.ChunkSize+1], 32)
 
 	h := blake3.New(32, nil)
 	if h.Size() != 32 || h.BlockSize() != guts.BlockSize {
@@ -223,7 +224,7 @@ func TestContractHashHash(t *testing.T) {
 	// Reset
 	h.Reset()
 
-	if got := h.Sum(nil); !bytes.Equal(got, refHash(nil, 32)) {
+	if got := h.Sum(nil); !bytes.Equal(got, refimpl.Hash(nil, 32)) {
 		t.Fatalf("Sum after Reset = %x, want the empty hash", got)
 	}
 
@@ -261,12 +262,12 @@ func TestContractCopyForks(t *testing.T) {
 	h.Write(in[2*guts.ChunkSize+3:])
 	fork.Write([]byte("other"))
 
-	if got := h.Sum(nil); !bytes.Equal(got, refHash(in, 32)) {
+	if got := h.Sum(nil); !bytes.Equal(got, refimpl.Hash(in, 32)) {
 		t.Fatalf("original after the fork wrote: %x", got)
 	}
 
 	other := append(bytes.Clone(in[:2*guts.ChunkSize+3]), "other"...)
-	if got := fork.Sum(nil); !bytes.Equal(got, refHash(other, 32)) {
+	if got := fork.Sum(nil); !bytes.Equal(got, refimpl.Hash(other, 32)) {
 		t.Fatalf("fork after the original wrote: %x", got)
 	}
 
@@ -292,7 +293,7 @@ func TestContractCopyForks(t *testing.T) {
 		t.Fatal("the copied OutputReader did not continue from the same position")
 	}
 
-	if !bytes.Equal(buf, newRefHasher().finalize(100, 100)) {
+	if !bytes.Equal(buf, refimpl.New().Finalize(100, 100)) {
 		t.Fatal("the OutputReader's bytes 100..200 are not the stream's")
 	}
 }
@@ -342,7 +343,7 @@ func TestContractXOFCaptured(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !bytes.Equal(got, refHash(in[:guts.ChunkSize], 64)) {
+	if !bytes.Equal(got, refimpl.Hash(in[:guts.ChunkSize], 64)) {
 		t.Fatal("the XOF saw a write made after it was taken")
 	}
 }
@@ -367,7 +368,7 @@ func TestContractXOFEnd(t *testing.T) {
 		t.Fatalf("Read across the end = %d, %v; want %d, nil", n, err, rem)
 	}
 
-	if want := newRefHasher().finalize(math.MaxUint64-rem, rem); !bytes.Equal(buf[:n], want) {
+	if want := refimpl.New().Finalize(math.MaxUint64-rem, rem); !bytes.Equal(buf[:n], want) {
 		t.Fatal("the last bytes of the stream are not the reference's")
 	}
 
@@ -386,7 +387,7 @@ func TestContractXOFSeek(t *testing.T) {
 	t.Parallel()
 
 	xof := blake3.New(0, nil).XOF()
-	ref := newRefHasher()
+	ref := refimpl.New()
 
 	// position 0 after construction
 	readAt := func(want uint64) {
@@ -400,7 +401,7 @@ func TestContractXOFSeek(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if !bytes.Equal(got, ref.finalize(want, n)) {
+		if !bytes.Equal(got, ref.Finalize(want, n)) {
 			t.Fatalf("the read is not the stream at %d", want)
 		}
 
@@ -485,14 +486,14 @@ func TestContractDeriveKey(t *testing.T) {
 
 	material := cInput(1500)
 
-	ref := newRefDeriveKey(ctx)
-	ref.update(material)
+	ref := refimpl.NewDeriveKey(ctx)
+	ref.Update(material)
 
 	for _, n := range []int{0, 1, 31, 32, 33, 64, 65, 1000, 1025} {
 		got := make([]byte, n)
 		blake3.DeriveKey(got, ctx, material)
 
-		if !bytes.Equal(got, ref.finalize(0, n)) {
+		if !bytes.Equal(got, ref.Finalize(0, n)) {
 			t.Fatalf("DeriveKey of %d bytes is not the reference's", n)
 		}
 	}

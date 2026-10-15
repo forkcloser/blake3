@@ -18,6 +18,7 @@ import (
 
 	"github.com/forkcloser/blake3"
 	"github.com/forkcloser/blake3/guts"
+	"github.com/forkcloser/blake3/internal/refimpl"
 )
 
 // inputLengths are the lengths walked: each boundary, one step either side.
@@ -64,7 +65,7 @@ func inputLengths() []int {
 type mode struct {
 	name string
 	new  func() *blake3.Hasher
-	ref  func() *refHasher
+	ref  func() *refimpl.Hasher
 	sum  func(in []byte, n int) []byte // the one-shot form, nil where there is none
 }
 
@@ -80,7 +81,7 @@ func modes() []mode {
 		{
 			name: "plain",
 			new:  func() *blake3.Hasher { return blake3.New(64, nil) },
-			ref:  newRefHasher,
+			ref:  refimpl.New,
 			sum: func(in []byte, n int) []byte {
 				if n == 32 {
 					s := blake3.Sum256(in)
@@ -96,11 +97,11 @@ func modes() []mode {
 		{
 			name: "keyed",
 			new:  func() *blake3.Hasher { return blake3.New(64, key[:]) },
-			ref:  func() *refHasher { return newRefKeyed(key) },
+			ref:  func() *refimpl.Hasher { return refimpl.NewKeyed(key) },
 		},
 		{
 			name: "derive",
-			ref:  func() *refHasher { return newRefDeriveKey(ctx) },
+			ref:  func() *refimpl.Hasher { return refimpl.NewDeriveKey(ctx) },
 			sum: func(in []byte, n int) []byte {
 				out := make([]byte, n)
 				blake3.DeriveKey(out, ctx, in)
@@ -169,10 +170,10 @@ func TestBoundedLengths(t *testing.T) {
 				in := data[:n]
 
 				ref := m.ref()
-				ref.update(in)
+				ref.Update(in)
 
-				want64 := ref.finalize(0, 64)
-				want200 := ref.finalize(0, 200)
+				want64 := ref.Finalize(0, 64)
+				want200 := ref.Finalize(0, 200)
 
 				if m.sum != nil {
 					if got := m.sum(in, 32); !bytes.Equal(got, want64[:32]) {
@@ -242,8 +243,8 @@ func TestBoundedXOFReads(t *testing.T) {
 	t.Parallel()
 
 	in := cInput(guts.ChunkSize + 1)
-	ref := newRefHasher()
-	ref.update(in)
+	ref := refimpl.New()
+	ref.Update(in)
 
 	h := blake3.New(32, nil)
 	h.Write(in)
@@ -260,7 +261,7 @@ func TestBoundedXOFReads(t *testing.T) {
 				t.Fatalf("offset %d, size %d: %v", off, size, err)
 			}
 
-			if !bytes.Equal(got, ref.finalize(off, size)) {
+			if !bytes.Equal(got, ref.Finalize(off, size)) {
 				t.Fatalf("offset %d, size %d: the read is not the stream", off, size)
 			}
 
@@ -271,7 +272,7 @@ func TestBoundedXOFReads(t *testing.T) {
 
 			if !bytes.Equal(
 				next,
-				ref.finalize(off+uint64(size), 100),
+				ref.Finalize(off+uint64(size), 100),
 			) {
 				t.Fatalf("offset %d, size %d: the following read is not the stream", off, size)
 			}
@@ -284,7 +285,7 @@ func TestBoundedXOFReads(t *testing.T) {
 func TestBoundedXOFEnd(t *testing.T) {
 	t.Parallel()
 
-	ref := newRefHasher()
+	ref := refimpl.New()
 
 	for _, rem := range []int{1, 63, 64, 65, 1023, 1024, 1025, 20000} {
 		xof := blake3.New(0, nil).XOF()
@@ -301,7 +302,7 @@ func TestBoundedXOFEnd(t *testing.T) {
 
 		if !bytes.Equal(
 			got[:n],
-			ref.finalize(math.MaxUint64-uint64(rem), rem),
+			ref.Finalize(math.MaxUint64-uint64(rem), rem),
 		) {
 			t.Fatalf("rem %d: the last bytes are not the stream's", rem)
 		}
@@ -321,7 +322,7 @@ func TestBoundedXOFEnd(t *testing.T) {
 func TestBoundedXOFSeekSequences(t *testing.T) {
 	t.Parallel()
 
-	ref := newRefHasher()
+	ref := refimpl.New()
 
 	type seek struct {
 		off    int64
@@ -382,7 +383,7 @@ func TestBoundedXOFSeekSequences(t *testing.T) {
 				t.Fatalf("%s: %v", name, err)
 			}
 
-			if !bytes.Equal(buf, ref.finalize(want, 70)) {
+			if !bytes.Equal(buf, ref.Finalize(want, 70)) {
 				t.Fatalf("%s: the read after the seek is not the stream at %d", name, want)
 			}
 
