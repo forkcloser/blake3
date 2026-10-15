@@ -385,14 +385,36 @@ func ExtractSlice(dst io.Writer, data, outboard io.Reader, group int, offset, le
 	}
 	ext.transfer(outboard, headerSize, true)
 
+	if ext.err != nil {
+		return ext.err
+	}
+
 	dataLen := binary.LittleEndian.Uint64(ext.buf[:headerSize])
 	if end := offset + length; end < offset || dataLen < end {
 		return errSliceLength
 	}
 
+	ext.offset, ext.length = sliceBounds(offset, length, dataLen)
 	ext.extract(0, dataLen)
 
 	return ext.err
+}
+
+// sliceBounds is the range of content a slice carries for a request. A slice
+// holds at least one chunk (the Bao spec's "Slice Format"): a zero length is
+// the chunk at offset, or the last one when offset is the end. The empty
+// encoding is its own one empty chunk, reached whatever the range, and a
+// request on it is left alone.
+func sliceBounds(offset, length, dataLen uint64) (sliceOffset, sliceLength uint64) {
+	if length != 0 || dataLen == 0 {
+		return offset, length
+	}
+
+	if offset == dataLen {
+		offset--
+	}
+
+	return offset, 1
 }
 
 // extractor is ExtractSlice's walk of the tree. Its first error stops the
@@ -462,10 +484,15 @@ func DecodeSlice(dst io.Writer, data io.Reader, group int, offset, length uint64
 	}
 
 	dataLen := binary.LittleEndian.Uint64(dec.read(headerSize))
+	if dec.err != nil {
+		return false, dec.err
+	}
+
 	if end := offset + length; end < offset || dataLen < end {
 		return false, errSliceLength
 	}
 
+	dec.sliceOffset, dec.sliceLength = sliceBounds(offset, length, dataLen)
 	ok := dec.decode(bytesToCV(root[:]), 0, dataLen, guts.FlagRoot)
 
 	return ok, dec.err
@@ -474,12 +501,16 @@ func DecodeSlice(dst io.Writer, data io.Reader, group int, offset, length uint64
 // sliceDecoder is DecodeSlice's walk of the tree. Its first error stops the
 // walk, and DecodeSlice returns it.
 type sliceDecoder struct {
-	dst            io.Writer
-	data           io.Reader
-	buf            []byte
-	groupSize      uint64
-	offset, length uint64
-	err            error
+	dst       io.Writer
+	data      io.Reader
+	buf       []byte
+	groupSize uint64
+	// offset and length are what the caller asked for and what is written;
+	// sliceOffset and sliceLength are what the slice carries (sliceBounds),
+	// which decides the nodes read and verified.
+	offset, length           uint64
+	sliceOffset, sliceLength uint64
+	err                      error
 }
 
 func (d *sliceDecoder) read(n uint64) []byte {
@@ -506,7 +537,7 @@ func (d *sliceDecoder) write(p []byte) {
 }
 
 func (d *sliceDecoder) decode(cv [8]uint32, pos, bufLen uint64, flags uint32) bool {
-	inSlice := pos < (d.offset+d.length) && d.offset < (pos+bufLen)
+	inSlice := pos < (d.sliceOffset+d.sliceLength) && d.sliceOffset < (pos+bufLen)
 	if d.err != nil {
 		return false
 	} else if bufLen <= d.groupSize {
@@ -576,7 +607,9 @@ func VerifySlice(data []byte, group int, offset, length uint64, root [32]byte) (
 	return buf.Bytes(), true
 }
 
-// VerifyChunk verifies the provided chunks with a full outboard encoding.
+// VerifyChunk verifies the provided chunks with a full outboard encoding. With
+// no chunks there is nothing to hold the root to, and the result is false,
+// except for the encoding of empty data, whose one empty chunk is verified.
 func VerifyChunk(chunks, outboard []byte, group int, offset uint64, root [32]byte) bool {
 	checkGroup(group)
 
@@ -592,8 +625,13 @@ func VerifyChunk(chunks, outboard []byte, group int, offset uint64, root [32]byt
 	}
 
 	dataLen := binary.LittleEndian.Uint64(ver.outboard.Next(headerSize))
+	// #nosec G115 -- the buffer's length, never negative
 	if end := offset + ver.length; end < offset || dataLen < end ||
-		ver.outboard.Len() != parentSize*ver.nodesWithin(dataLen) {
+		uint64(ver.outboard.Len()) != parentSize*ver.nodesWithin(dataLen) {
+		return false
+	}
+
+	if ver.length == 0 && dataLen > 0 {
 		return false
 	}
 
@@ -608,12 +646,14 @@ type chunkVerifier struct {
 }
 
 // nodesWithin is the number of parent nodes in a subtree of bufLen bytes.
-func (v *chunkVerifier) nodesWithin(bufLen uint64) int {
+// bufLen comes from the encoding's header, so the arithmetic stays in
+// uint64: at most 2^54 nodes, 2^60 bytes of them.
+func (v *chunkVerifier) nodesWithin(bufLen uint64) uint64 {
 	if bufLen <= v.groupSize {
 		return 0 // leaf
 	}
 
-	n := int(bufLen / v.groupSize) // #nosec G115 -- bufLen is an in-memory slice's length, so the quotient fits an int
+	n := bufLen / v.groupSize
 	if bufLen%v.groupSize == 0 {
 		n--
 	}
@@ -628,7 +668,10 @@ func (v *chunkVerifier) verify(cv [8]uint32, pos, bufLen uint64, flags uint32) b
 	}
 
 	if !inSlice {
-		_ = v.outboard.Next(parentSize * v.nodesWithin(bufLen)) // skip
+		// A subtree's nodes are among the whole tree's, whose byte count
+		// was matched to the outboard's length at entry, so this fits.
+		_ = v.outboard.Next(int(parentSize * v.nodesWithin(bufLen))) // #nosec G115 -- bounded by the outboard's length
+
 		return true
 	}
 

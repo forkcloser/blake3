@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"io"
 	"math"
 	"os"
@@ -369,6 +370,121 @@ func TestBaoSlice(t *testing.T) {
 			) {
 				t.Error("outboard bad decode", test, vdata, data[test.off:][:test.len])
 			}
+		}
+	}
+}
+
+// TestBaoSliceHeaderShort: a header the reader cannot supply is the reader's
+// error, io.EOF for nothing and io.ErrUnexpectedEOF for a part, never a
+// verdict on the slice bounds.
+func TestBaoSliceHeaderShort(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		enc  []byte
+		want error
+	}{
+		{nil, io.EOF},
+		{[]byte{1, 2, 3}, io.ErrUnexpectedEOF},
+	} {
+		err := bao.ExtractSlice(io.Discard, bytes.NewReader(test.enc), nil, 0, 0, 1)
+		if !errors.Is(err, test.want) {
+			t.Errorf("ExtractSlice on %d header bytes: %v, want %v", len(test.enc), err, test.want)
+		}
+
+		ok, err := bao.DecodeSlice(io.Discard, bytes.NewReader(test.enc), 0, 0, 1, [32]byte{})
+		if ok || !errors.Is(err, test.want) {
+			t.Errorf("DecodeSlice on %d header bytes: (%v, %v), want (false, %v)", len(test.enc), ok, err, test.want)
+		}
+	}
+}
+
+// TestBaoZeroLengthSlice pins the spec's rule that a slice holds at least one
+// chunk: a zero-length request carries the chunk at its offset (the last one
+// when the offset is the end), decodes to nothing, and verifies the root.
+func TestBaoZeroLengthSlice(t *testing.T) {
+	t.Parallel()
+
+	data := xofBytes(t, 5000)
+	enc, root := bao.EncodeBuf(data, 0, false)
+	wrongRoot := root
+	wrongRoot[0] ^= 1
+
+	for _, off := range []uint64{0, 1023, 1024, 2500, 4999, 5000} {
+		var zero, one bytes.Buffer
+		if err := bao.ExtractSlice(&zero, bytes.NewReader(enc), nil, 0, off, 0); err != nil {
+			t.Fatalf("offset %d: %v", off, err)
+		}
+
+		// the chunk the zero-length slice carries: at the offset, or the
+		// last one when the offset is the end of the content
+		chunkOff := min(off, uint64(len(data)-1))
+		if err := bao.ExtractSlice(&one, bytes.NewReader(enc), nil, 0, chunkOff, 1); err != nil {
+			t.Fatalf("offset %d: %v", off, err)
+		}
+
+		if !bytes.Equal(zero.Bytes(), one.Bytes()) {
+			t.Errorf("offset %d: zero-length slice is %d bytes, the one-byte slice %d", off, zero.Len(), one.Len())
+		}
+
+		out, ok := bao.VerifySlice(zero.Bytes(), 0, off, 0, root)
+		if !ok || len(out) != 0 {
+			t.Errorf("offset %d: VerifySlice = (%d bytes, %v), want (0, true)", off, len(out), ok)
+		}
+
+		if _, accepted := bao.VerifySlice(zero.Bytes(), 0, off, 0, wrongRoot); accepted {
+			t.Errorf("offset %d: VerifySlice accepted a wrong root", off)
+		}
+
+		accepted, err := bao.DecodeSlice(io.Discard, bytes.NewReader(zero.Bytes()), 0, off, 0, wrongRoot)
+		if accepted || err != nil {
+			t.Errorf("offset %d: DecodeSlice with a wrong root = (%v, %v), want (false, nil)", off, accepted, err)
+		}
+	}
+
+	// the empty encoding: one empty chunk, verified
+	enc, root = bao.EncodeBuf(nil, 0, false)
+
+	var buf bytes.Buffer
+	if err := bao.ExtractSlice(&buf, bytes.NewReader(enc), nil, 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := bao.VerifySlice(buf.Bytes(), 0, 0, 0, root); !ok {
+		t.Error("empty encoding: zero-length slice did not verify")
+	}
+
+	wrongRoot = root
+	wrongRoot[0] ^= 1
+
+	if _, ok := bao.VerifySlice(buf.Bytes(), 0, 0, 0, wrongRoot); ok {
+		t.Error("empty encoding: VerifySlice accepted a wrong root")
+	}
+}
+
+// TestBaoVerifyChunkHugeLength: a header claiming 2^64-1 bytes is a size that
+// comes from input; the node count it implies is compared, never allocated
+// or converted, and the answer is false.
+func TestBaoVerifyChunkHugeLength(t *testing.T) {
+	t.Parallel()
+
+	outboard := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+	if bao.VerifyChunk(make([]byte, 1024), outboard, 0, 0, [32]byte{}) {
+		t.Error("VerifyChunk accepted an outboard whose header claims 2^64-1 bytes")
+	}
+}
+
+// TestBaoVerifyChunkNoChunks: with no chunks and non-empty content there is
+// nothing to hold the root to.
+func TestBaoVerifyChunkNoChunks(t *testing.T) {
+	t.Parallel()
+
+	data := xofBytes(t, 3000)
+	outboard, root := bao.EncodeBuf(data, 0, true)
+
+	for _, off := range []uint64{0, 1024, 3000} {
+		if bao.VerifyChunk(nil, outboard, 0, off, root) {
+			t.Errorf("offset %d: VerifyChunk with no chunks returned true", off)
 		}
 	}
 }
