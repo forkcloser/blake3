@@ -74,8 +74,17 @@ of the root and generic `guts` sources, the new suite kills every one the
 old did and four more; the survivors are dispatch choices and thresholds the
 output cannot see, bounds a loop steps past into a no-op, zero-sized outputs,
 and the odd-count merge in `guts` that its own suite is for. A fuzz target on
-the split pattern runs in CI. The `bao`
-decoders are fuzzed on hostile encodings and slice bounds. The
+the split pattern runs in CI. `bao` is held the same way to an encoder
+written from the Bao specification over that reference: the contract tests
+check both encodings, the root, the slice formats and every error against
+it, and the bounded walk every length around every chunk and group boundary
+at every group size to 128 KiB, every slice bound, and every chunk
+verification. Its old suite retired under the same measure: of 201
+single-point mutants of `bao.go`, the new suite kills every one the old did
+and twenty more; the survivors are capacity constants, bounds a loop steps
+past into a no-op, an error path's count, and a node count that comes out
+the same either way. The decoders are fuzzed on hostile encodings and slice
+bounds, and slices on arbitrary bounds against the specification. The
 amd64 assembly is generated from `avo/gen.go`, which lives in its own module
 so `avo` never enters the library's dependency graph; `just lint-generated`
 regenerates it and fails if the committed file differs, and the generated
