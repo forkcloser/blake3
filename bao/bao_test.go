@@ -373,6 +373,84 @@ func TestBaoSlice(t *testing.T) {
 	}
 }
 
+// TestBaoZeroLengthSlice pins the spec's rule that a slice holds at least one
+// chunk: a zero-length request carries the chunk at its offset (the last one
+// when the offset is the end), decodes to nothing, and verifies the root.
+func TestBaoZeroLengthSlice(t *testing.T) {
+	t.Parallel()
+
+	data := xofBytes(t, 5000)
+	enc, root := bao.EncodeBuf(data, 0, false)
+	wrongRoot := root
+	wrongRoot[0] ^= 1
+
+	for _, off := range []uint64{0, 1023, 1024, 2500, 4999, 5000} {
+		var zero, one bytes.Buffer
+		if err := bao.ExtractSlice(&zero, bytes.NewReader(enc), nil, 0, off, 0); err != nil {
+			t.Fatalf("offset %d: %v", off, err)
+		}
+
+		// the chunk the zero-length slice carries: at the offset, or the
+		// last one when the offset is the end of the content
+		chunkOff := min(off, uint64(len(data)-1))
+		if err := bao.ExtractSlice(&one, bytes.NewReader(enc), nil, 0, chunkOff, 1); err != nil {
+			t.Fatalf("offset %d: %v", off, err)
+		}
+
+		if !bytes.Equal(zero.Bytes(), one.Bytes()) {
+			t.Errorf("offset %d: zero-length slice is %d bytes, the one-byte slice %d", off, zero.Len(), one.Len())
+		}
+
+		out, ok := bao.VerifySlice(zero.Bytes(), 0, off, 0, root)
+		if !ok || len(out) != 0 {
+			t.Errorf("offset %d: VerifySlice = (%d bytes, %v), want (0, true)", off, len(out), ok)
+		}
+
+		if _, accepted := bao.VerifySlice(zero.Bytes(), 0, off, 0, wrongRoot); accepted {
+			t.Errorf("offset %d: VerifySlice accepted a wrong root", off)
+		}
+
+		accepted, err := bao.DecodeSlice(io.Discard, bytes.NewReader(zero.Bytes()), 0, off, 0, wrongRoot)
+		if accepted || err != nil {
+			t.Errorf("offset %d: DecodeSlice with a wrong root = (%v, %v), want (false, nil)", off, accepted, err)
+		}
+	}
+
+	// the empty encoding: one empty chunk, verified
+	enc, root = bao.EncodeBuf(nil, 0, false)
+
+	var buf bytes.Buffer
+	if err := bao.ExtractSlice(&buf, bytes.NewReader(enc), nil, 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := bao.VerifySlice(buf.Bytes(), 0, 0, 0, root); !ok {
+		t.Error("empty encoding: zero-length slice did not verify")
+	}
+
+	wrongRoot = root
+	wrongRoot[0] ^= 1
+
+	if _, ok := bao.VerifySlice(buf.Bytes(), 0, 0, 0, wrongRoot); ok {
+		t.Error("empty encoding: VerifySlice accepted a wrong root")
+	}
+}
+
+// TestBaoVerifyChunkNoChunks: with no chunks and non-empty content there is
+// nothing to hold the root to.
+func TestBaoVerifyChunkNoChunks(t *testing.T) {
+	t.Parallel()
+
+	data := xofBytes(t, 3000)
+	outboard, root := bao.EncodeBuf(data, 0, true)
+
+	for _, off := range []uint64{0, 1024, 3000} {
+		if bao.VerifyChunk(nil, outboard, 0, off, root) {
+			t.Errorf("offset %d: VerifyChunk with no chunks returned true", off)
+		}
+	}
+}
+
 // discardAt is an io.WriterAt that accepts every write, for probing Encode's
 // argument validation without a sized buffer getting in the way.
 type discardAt struct{}

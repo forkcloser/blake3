@@ -44,6 +44,9 @@ in `ExtractSlice`, `DecodeSlice` and `VerifyChunk`; `VerifyChunk` and
 `DecodeSlice` verify the root of an empty encoding, `VerifyChunk` counts
 leaves correctly so its outboard-length check is exact, and the parent-merge
 stack in `compressGroup` is sized for 2⁶⁴ bytes (upstream's could overflow).
+A zero-length slice carries the chunk at its start point, as the Bao spec
+says, so `DecodeSlice` and `VerifySlice` no longer report a root they never
+checked; `VerifyChunk` with no chunks is false rather than vacuously true.
 Every `bao` function validates its `group` (a value outside `[0, MaxGroup]`
 panics with a message instead of an unrelated runtime fault), and `Encode`
 rejects a negative length before writing anything. On amd64 a short eigentree

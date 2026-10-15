@@ -390,9 +390,27 @@ func ExtractSlice(dst io.Writer, data, outboard io.Reader, group int, offset, le
 		return errSliceLength
 	}
 
+	ext.offset, ext.length = sliceBounds(offset, length, dataLen)
 	ext.extract(0, dataLen)
 
 	return ext.err
+}
+
+// sliceBounds is the range of content a slice carries for a request. A slice
+// holds at least one chunk (the Bao spec's "Slice Format"): a zero length is
+// the chunk at offset, or the last one when offset is the end. The empty
+// encoding is its own one empty chunk, reached whatever the range, and a
+// request on it is left alone.
+func sliceBounds(offset, length, dataLen uint64) (sliceOffset, sliceLength uint64) {
+	if length != 0 || dataLen == 0 {
+		return offset, length
+	}
+
+	if offset == dataLen {
+		offset--
+	}
+
+	return offset, 1
 }
 
 // extractor is ExtractSlice's walk of the tree. Its first error stops the
@@ -466,6 +484,7 @@ func DecodeSlice(dst io.Writer, data io.Reader, group int, offset, length uint64
 		return false, errSliceLength
 	}
 
+	dec.sliceOffset, dec.sliceLength = sliceBounds(offset, length, dataLen)
 	ok := dec.decode(bytesToCV(root[:]), 0, dataLen, guts.FlagRoot)
 
 	return ok, dec.err
@@ -474,12 +493,16 @@ func DecodeSlice(dst io.Writer, data io.Reader, group int, offset, length uint64
 // sliceDecoder is DecodeSlice's walk of the tree. Its first error stops the
 // walk, and DecodeSlice returns it.
 type sliceDecoder struct {
-	dst            io.Writer
-	data           io.Reader
-	buf            []byte
-	groupSize      uint64
-	offset, length uint64
-	err            error
+	dst       io.Writer
+	data      io.Reader
+	buf       []byte
+	groupSize uint64
+	// offset and length are what the caller asked for and what is written;
+	// sliceOffset and sliceLength are what the slice carries (sliceBounds),
+	// which decides the nodes read and verified.
+	offset, length           uint64
+	sliceOffset, sliceLength uint64
+	err                      error
 }
 
 func (d *sliceDecoder) read(n uint64) []byte {
@@ -506,7 +529,7 @@ func (d *sliceDecoder) write(p []byte) {
 }
 
 func (d *sliceDecoder) decode(cv [8]uint32, pos, bufLen uint64, flags uint32) bool {
-	inSlice := pos < (d.offset+d.length) && d.offset < (pos+bufLen)
+	inSlice := pos < (d.sliceOffset+d.sliceLength) && d.sliceOffset < (pos+bufLen)
 	if d.err != nil {
 		return false
 	} else if bufLen <= d.groupSize {
@@ -576,7 +599,9 @@ func VerifySlice(data []byte, group int, offset, length uint64, root [32]byte) (
 	return buf.Bytes(), true
 }
 
-// VerifyChunk verifies the provided chunks with a full outboard encoding.
+// VerifyChunk verifies the provided chunks with a full outboard encoding. With
+// no chunks there is nothing to hold the root to, and the result is false,
+// except for the encoding of empty data, whose one empty chunk is verified.
 func VerifyChunk(chunks, outboard []byte, group int, offset uint64, root [32]byte) bool {
 	checkGroup(group)
 
@@ -594,6 +619,10 @@ func VerifyChunk(chunks, outboard []byte, group int, offset uint64, root [32]byt
 	dataLen := binary.LittleEndian.Uint64(ver.outboard.Next(headerSize))
 	if end := offset + ver.length; end < offset || dataLen < end ||
 		ver.outboard.Len() != parentSize*ver.nodesWithin(dataLen) {
+		return false
+	}
+
+	if ver.length == 0 && dataLen > 0 {
 		return false
 	}
 
