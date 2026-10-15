@@ -25,12 +25,11 @@ import (
 // every platform.
 const MaxGroup = 20
 
-var (
-	// errNegativeLength is Encode's refusal of a negative dataLen.
-	errNegativeLength = errors.New("bao: negative data length")
-	// errSliceLength is a slice that does not fit the encoded data.
-	errSliceLength = errors.New("invalid slice length")
-)
+// ErrSliceLength is a slice request that does not fit the encoded data: its
+// offset plus length overflows, or ends past the content length the encoding
+// declares. The request is wrong for this encoding; nothing was read past
+// the header.
+var ErrSliceLength = errors.New("bao: slice does not fit the encoded data")
 
 // The encoding's fixed sizes, in bytes.
 const (
@@ -146,12 +145,14 @@ func EncodedSize(dataLen, group int, outboard bool) int {
 //
 // Note that dst is not written sequentially, and therefore must be initialized
 // with sufficient capacity to hold the encoding; see EncodedSize. A negative
-// dataLen is an error, reported before anything is written.
+// dataLen is a programming error and panics, as it does in EncodedSize,
+// before anything is written. The error is the destination's or the
+// source's, as they report it.
 func Encode(dst io.WriterAt, data io.Reader, dataLen int64, group int, outboard bool) ([32]byte, error) {
 	checkGroup(group)
 
 	if dataLen < 0 {
-		return [32]byte{}, errNegativeLength
+		panic("bao: negative data length")
 	}
 
 	groupSize := uint64(guts.ChunkSize << group)
@@ -391,7 +392,7 @@ func ExtractSlice(dst io.Writer, data, outboard io.Reader, group int, offset, le
 
 	dataLen := binary.LittleEndian.Uint64(ext.buf[:headerSize])
 	if end := offset + length; end < offset || dataLen < end {
-		return errSliceLength
+		return ErrSliceLength
 	}
 
 	ext.offset, ext.length = sliceBounds(offset, length, dataLen)
@@ -489,7 +490,7 @@ func DecodeSlice(dst io.Writer, data io.Reader, group int, offset, length uint64
 	}
 
 	if end := offset + length; end < offset || dataLen < end {
-		return false, errSliceLength
+		return false, ErrSliceLength
 	}
 
 	dec.sliceOffset, dec.sliceLength = sliceBounds(offset, length, dataLen)

@@ -48,8 +48,10 @@ A zero-length slice carries the chunk at its start point, as the Bao spec
 says, so `DecodeSlice` and `VerifySlice` no longer report a root they never
 checked; `VerifyChunk` with no chunks is false rather than vacuously true.
 Every `bao` function validates its `group` (a value outside `[0, MaxGroup]`
-panics with a message instead of an unrelated runtime fault), and `Encode`
-rejects a negative length before writing anything. On amd64 a short eigentree
+panics with a message instead of an unrelated runtime fault), as does a
+negative length in `Encode` and `EncodedSize`, before anything is written. A
+slice request that does not fit its encoding is `bao.ErrSliceLength`, for
+`errors.Is`; the other errors `bao` returns are the readers' and writers' own. On amd64 a short eigentree
 is copied into a stack buffer before it reaches the SIMD kernels, which read a
 full 16 KiB: the bytes past the input's length are no longer touched.
 
