@@ -494,6 +494,34 @@ func TestEigentrees(t *testing.T) {
 	}
 }
 
+// TestCompressEigentreePrecondition: a length that is not a power-of-two
+// number of whole chunks panics, a partial chunk included; before the check
+// covered it, 1500 bytes passed as one chunk and came back as a value that
+// is not BLAKE3.
+func TestCompressEigentreePrecondition(t *testing.T) {
+	t.Parallel()
+
+	panics := func(n int) (panicked bool) {
+		defer func() { panicked = recover() != nil }()
+
+		guts.CompressEigentree(make([]byte, n), &guts.IV, 0, 0)
+
+		return false
+	}
+
+	for _, n := range []int{0, 1, 1500, 3 * guts.ChunkSize, 2*guts.ChunkSize + 1} {
+		if !panics(n) {
+			t.Errorf("CompressEigentree accepted %d bytes", n)
+		}
+	}
+
+	for _, n := range []int{guts.ChunkSize, 2 * guts.ChunkSize, 16 * guts.ChunkSize, 32 * guts.ChunkSize} {
+		if panics(n) {
+			t.Errorf("CompressEigentree refused %d bytes", n)
+		}
+	}
+}
+
 func TestSplitWrite(t *testing.T) {
 	t.Parallel()
 
