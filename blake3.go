@@ -445,9 +445,10 @@ func (or *OutputReader) Read(p []byte) (int, error) {
 
 // Seek implements io.Seeker. A position before the start of the stream or
 // past its end is rejected with an error and leaves the position unchanged;
-// io.SeekEnd with a zero offset positions at the last byte. Positions of
-// 2^63 and above are valid but cannot be represented in the int64 return
-// value, which is then negative.
+// io.SeekEnd with a zero offset positions at the end, where Read returns
+// io.EOF, and with -1 at the last byte. Positions of 2^63 and above are
+// valid but cannot be represented in the int64 return value, which is then
+// negative.
 func (or *OutputReader) Seek(offset int64, whence int) (int64, error) {
 	off := or.off
 
