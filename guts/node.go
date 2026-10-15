@@ -89,13 +89,15 @@ func Eigentrees(counter, chunks uint64) (trees []int) {
 	return trees
 }
 
-// CompressEigentree compresses a buffer of 2^n chunks in parallel, returning
-// their root node.
+// CompressEigentree compresses a buffer of 2^n whole chunks in parallel,
+// returning their root node. It panics on any other length: a tree is a
+// power-of-two number of chunks, and a partial chunk belongs to
+// CompressChunk or CompressBuffer.
 func CompressEigentree(buf []byte, key *[8]uint32, counter uint64, flags uint32) Node {
 	numChunks := uint64(len(buf) / ChunkSize)
 	switch {
-	case bits.OnesCount64(numChunks) != 1:
-		panic("non-power-of-two eigentree size")
+	case len(buf)%ChunkSize != 0 || bits.OnesCount64(numChunks) != 1:
+		panic("guts: an eigentree is a power-of-two number of whole chunks")
 	case numChunks == 1:
 		return CompressChunk(buf, key, counter, flags)
 	case numChunks <= MaxSIMD:
