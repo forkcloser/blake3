@@ -193,3 +193,11 @@ performance.
 
 On amd64, the SIMD kernels always process a full 16-chunk (16 KiB) buffer: a
 shorter eigentree tail is padded and the unused lanes' work discarded.
+
+The AVX-512 kernels have not been executed since the fork. No CI runner has
+`avx512f` (the amd64 legs report AVX2 only), the development machine is
+arm64, and the fork changed the kernels' generator (the scalar broadcasts
+now go through a register). The AVX2 kernels and the pure-Go code run on
+every CI leg; the AVX-512 path is pinned by the same vectors but on a host
+nobody has. TODO: run the test suite on an AVX-512 host, or under an
+emulator that has it, before the next release that touches `avo/gen.go`.
