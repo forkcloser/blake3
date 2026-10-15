@@ -254,12 +254,17 @@ func TestBaoInvalidSliceBounds(t *testing.T) {
 		{1 << 63, 1<<63 + 10},            // offset+length overflows
 		{math.MaxUint64, math.MaxUint64}, // offset+length overflows
 	} {
-		if err := bao.ExtractSlice(io.Discard, bytes.NewReader(enc), nil, 0, test.off, test.len); err == nil {
-			t.Errorf("ExtractSlice accepted invalid slice bounds (%v, %v)", test.off, test.len)
+		err := bao.ExtractSlice(io.Discard, bytes.NewReader(enc), nil, 0, test.off, test.len)
+		if !errors.Is(err, bao.ErrSliceLength) {
+			t.Errorf("ExtractSlice on slice bounds (%v, %v): %v, want ErrSliceLength", test.off, test.len, err)
 		}
 
-		if ok, err := bao.DecodeSlice(io.Discard, bytes.NewReader(enc), 0, test.off, test.len, root); ok || err == nil {
-			t.Errorf("DecodeSlice accepted invalid slice bounds (%v, %v)", test.off, test.len)
+		ok, err := bao.DecodeSlice(io.Discard, bytes.NewReader(enc), 0, test.off, test.len, root)
+		if ok || !errors.Is(err, bao.ErrSliceLength) {
+			t.Errorf(
+				"DecodeSlice on slice bounds (%v, %v): (%v, %v), want (false, ErrSliceLength)",
+				test.off, test.len, ok, err,
+			)
 		}
 
 		if _, ok := bao.VerifySlice(enc, 0, test.off, test.len, root); ok {
@@ -545,27 +550,40 @@ func TestBaoGroupRange(t *testing.T) {
 	}
 }
 
+// TestBaoNegativeDataLen: a negative length is a programming error, and both
+// functions that take one panic on it, Encode before it writes anything.
 func TestBaoNegativeDataLen(t *testing.T) {
 	t.Parallel()
 
-	root, err := bao.Encode(discardAt{}, bytes.NewReader(nil), -1, 0, false)
-	if err == nil {
-		t.Fatal("Encode accepted a negative dataLen")
-	}
+	mustPanic := func(name string, f func()) {
+		t.Helper()
 
-	if root != [32]byte{} {
-		t.Error("Encode returned a root for a negative dataLen")
-	}
-
-	func() {
 		defer func() {
 			if recover() == nil {
-				t.Error("EncodedSize accepted a negative dataLen")
+				t.Errorf("%s accepted a negative dataLen", name)
 			}
 		}()
 
-		bao.EncodedSize(-1, 0, false)
-	}()
+		f()
+	}
+
+	var written countingAt
+
+	mustPanic("Encode", func() { _, _ = bao.Encode(&written, bytes.NewReader(nil), -1, 0, false) })
+	mustPanic("EncodedSize", func() { bao.EncodedSize(-1, 0, false) })
+
+	if written != 0 {
+		t.Errorf("Encode wrote %d bytes before refusing a negative dataLen", written)
+	}
+}
+
+// countingAt is an io.WriterAt that counts the bytes written to it.
+type countingAt int
+
+func (c *countingAt) WriteAt(p []byte, _ int64) (int, error) {
+	*c += countingAt(len(p))
+
+	return len(p), nil
 }
 
 // xofBytes returns n bytes of BLAKE3 output, the data these tests encode.
