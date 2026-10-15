@@ -12,6 +12,17 @@ golangci:
       # specifications it is checked against. Forks may disable a linter when
       # limen has the data; it does.
       - varnamelen
+    exclusions:
+      rules:
+        # A transcription of the specification's reference implementation,
+        # test support only: it reads as the specification's pseudocode, the
+        # state indices are the specification's, and its layout follows the
+        # reference's. The baseline exempts tests from these; this is the one
+        # non-test file that is a test's fixture.
+        - path: internal/refimpl/
+          linters:
+            - mnd
+            - funcorder
     settings:
       errcheck:
         exclude-functions:
