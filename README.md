@@ -62,11 +62,20 @@ goroutines. Small or unaligned XOF reads compress only the blocks they need
 (`guts.CompressBlocksN`); large reads run across CPUs above a threshold. Bao
 encoding reuses one parent buffer instead of allocating per node.
 
-**Assurance.** The eigentree fast path is pinned to the chunk-at-a-time
-reference by a deterministic test (every shape to 64 chunks, at many starting
-counters) and a fuzz target on the split pattern; CI fuzzes it on every run.
-XOF seeks are tested at buffer-unaligned offsets and with block counters past
-2³². The `bao` decoders are fuzzed on hostile encodings and slice bounds. The
+**Assurance.** The root package is held to a port of the specification's
+reference implementation, which shares nothing with `guts`: the contract
+tests (`contract_test.go`) state every rule from the specification,
+`hash.Hash` and the package doc and check it, and the bounded walk
+(`bounded_test.go`) compares every input length around every boundary of
+the implementation, in all three modes and at every kind of split, and every
+output offset and read size around the XOF's buffers, with the reference.
+Upstream's suite retired under a mutation score: of 352 single-point mutants
+of the root and generic `guts` sources, the new suite kills every one the
+old did and four more; the survivors are dispatch choices and thresholds the
+output cannot see, bounds a loop steps past into a no-op, zero-sized outputs,
+and the odd-count merge in `guts` that its own suite is for. A fuzz target on
+the split pattern runs in CI. The `bao`
+decoders are fuzzed on hostile encodings and slice bounds. The
 amd64 assembly is generated from `avo/gen.go`, which lives in its own module
 so `avo` never enters the library's dependency graph; `just lint-generated`
 regenerates it and fails if the committed file differs, and the generated
