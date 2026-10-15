@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"io"
 	"math"
 	"os"
@@ -369,6 +370,31 @@ func TestBaoSlice(t *testing.T) {
 			) {
 				t.Error("outboard bad decode", test, vdata, data[test.off:][:test.len])
 			}
+		}
+	}
+}
+
+// TestBaoSliceHeaderShort: a header the reader cannot supply is the reader's
+// error, io.EOF for nothing and io.ErrUnexpectedEOF for a part, never a
+// verdict on the slice bounds.
+func TestBaoSliceHeaderShort(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		enc  []byte
+		want error
+	}{
+		{nil, io.EOF},
+		{[]byte{1, 2, 3}, io.ErrUnexpectedEOF},
+	} {
+		err := bao.ExtractSlice(io.Discard, bytes.NewReader(test.enc), nil, 0, 0, 1)
+		if !errors.Is(err, test.want) {
+			t.Errorf("ExtractSlice on %d header bytes: %v, want %v", len(test.enc), err, test.want)
+		}
+
+		ok, err := bao.DecodeSlice(io.Discard, bytes.NewReader(test.enc), 0, 0, 1, [32]byte{})
+		if ok || !errors.Is(err, test.want) {
+			t.Errorf("DecodeSlice on %d header bytes: (%v, %v), want (false, %v)", len(test.enc), ok, err, test.want)
 		}
 	}
 }

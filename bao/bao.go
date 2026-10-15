@@ -385,6 +385,10 @@ func ExtractSlice(dst io.Writer, data, outboard io.Reader, group int, offset, le
 	}
 	ext.transfer(outboard, headerSize, true)
 
+	if ext.err != nil {
+		return ext.err
+	}
+
 	dataLen := binary.LittleEndian.Uint64(ext.buf[:headerSize])
 	if end := offset + length; end < offset || dataLen < end {
 		return errSliceLength
@@ -480,6 +484,10 @@ func DecodeSlice(dst io.Writer, data io.Reader, group int, offset, length uint64
 	}
 
 	dataLen := binary.LittleEndian.Uint64(dec.read(headerSize))
+	if dec.err != nil {
+		return false, dec.err
+	}
+
 	if end := offset + length; end < offset || dataLen < end {
 		return false, errSliceLength
 	}
