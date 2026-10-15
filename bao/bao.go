@@ -625,8 +625,9 @@ func VerifyChunk(chunks, outboard []byte, group int, offset uint64, root [32]byt
 	}
 
 	dataLen := binary.LittleEndian.Uint64(ver.outboard.Next(headerSize))
+	// #nosec G115 -- the buffer's length, never negative
 	if end := offset + ver.length; end < offset || dataLen < end ||
-		ver.outboard.Len() != parentSize*ver.nodesWithin(dataLen) {
+		uint64(ver.outboard.Len()) != parentSize*ver.nodesWithin(dataLen) {
 		return false
 	}
 
@@ -645,12 +646,14 @@ type chunkVerifier struct {
 }
 
 // nodesWithin is the number of parent nodes in a subtree of bufLen bytes.
-func (v *chunkVerifier) nodesWithin(bufLen uint64) int {
+// bufLen comes from the encoding's header, so the arithmetic stays in
+// uint64: at most 2^54 nodes, 2^60 bytes of them.
+func (v *chunkVerifier) nodesWithin(bufLen uint64) uint64 {
 	if bufLen <= v.groupSize {
 		return 0 // leaf
 	}
 
-	n := int(bufLen / v.groupSize) // #nosec G115 -- bufLen is an in-memory slice's length, so the quotient fits an int
+	n := bufLen / v.groupSize
 	if bufLen%v.groupSize == 0 {
 		n--
 	}
@@ -665,7 +668,10 @@ func (v *chunkVerifier) verify(cv [8]uint32, pos, bufLen uint64, flags uint32) b
 	}
 
 	if !inSlice {
-		_ = v.outboard.Next(parentSize * v.nodesWithin(bufLen)) // skip
+		// A subtree's nodes are among the whole tree's, whose byte count
+		// was matched to the outboard's length at entry, so this fits.
+		_ = v.outboard.Next(int(parentSize * v.nodesWithin(bufLen))) // #nosec G115 -- bounded by the outboard's length
+
 		return true
 	}
 

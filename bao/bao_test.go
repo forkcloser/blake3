@@ -462,6 +462,18 @@ func TestBaoZeroLengthSlice(t *testing.T) {
 	}
 }
 
+// TestBaoVerifyChunkHugeLength: a header claiming 2^64-1 bytes is a size that
+// comes from input; the node count it implies is compared, never allocated
+// or converted, and the answer is false.
+func TestBaoVerifyChunkHugeLength(t *testing.T) {
+	t.Parallel()
+
+	outboard := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+	if bao.VerifyChunk(make([]byte, 1024), outboard, 0, 0, [32]byte{}) {
+		t.Error("VerifyChunk accepted an outboard whose header claims 2^64-1 bytes")
+	}
+}
+
 // TestBaoVerifyChunkNoChunks: with no chunks and non-empty content there is
 // nothing to hold the root to.
 func TestBaoVerifyChunkNoChunks(t *testing.T) {
