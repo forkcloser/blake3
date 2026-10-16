@@ -26,73 +26,20 @@ Three packages:
 ## About this fork
 
 A friendly fork of [lukechampine/blake3](https://github.com/lukechampine/blake3)
-(import path `lukechampine.com/blake3`), taken at upstream `v1.4.1` — which is
+(import path `lukechampine.com/blake3`), taken at upstream `v1.4.1`, which is
 also upstream's current `master`. The exported API is upstream's with two
 additions (`guts.CompressBlocksN`, `bao.MaxGroup`) and one removal: the five
 `Bao*` wrappers upstream kept in the root package after moving Bao to its
-own package, already deprecated there, are gone — use package `bao`. For
+own package, already deprecated there, are gone; use package `bao`. For
 everything else, switching is a change of import path.
 
-What diverges:
-
-**Correctness.** `OutputReader.Seek` to an offset that was not aligned to the
-XOF's internal buffer produced corrupt output on the next `Read`; the buffer
-now caches an absolute window of the stream. `Seek` rejects offsets that would
-wrap. `New` panics on a negative size or a key of the wrong length instead of
-producing an undefined state. In `bao`, `offset+length` overflow is rejected
-in `ExtractSlice`, `DecodeSlice` and `VerifyChunk`; `VerifyChunk` and
-`DecodeSlice` verify the root of an empty encoding, `VerifyChunk` counts
-leaves correctly so its outboard-length check is exact, and the parent-merge
-stack in `compressGroup` is sized for 2⁶⁴ bytes (upstream's could overflow).
-A zero-length slice carries the chunk at its start point, as the Bao spec
-says, so `DecodeSlice` and `VerifySlice` no longer report a root they never
-checked; `VerifyChunk` with no chunks is false rather than vacuously true.
-Every `bao` function validates its `group` (a value outside `[0, MaxGroup]`
-panics with a message instead of an unrelated runtime fault), as does a
-negative length in `Encode` and `EncodedSize`, before anything is written. A
-slice request that does not fit its encoding is `bao.ErrSliceLength`, for
-`errors.Is`; the other errors `bao` returns are the readers' and writers' own. On amd64 a short eigentree
-is copied into a stack buffer before it reaches the SIMD kernels, which read a
-full 16 KiB: the bytes past the input's length are no longer touched.
-
-**Performance.** `Hasher.Write` schedules a large write's eigentrees by total
-size — serial below 24 KiB of trees, concurrent above — and `CompressEigentree` deals
-16 KiB groups out in NumCPU-capped runs, so a 1 MiB write no longer spawns 64
-goroutines. Small or unaligned XOF reads compress only the blocks they need
-(`guts.CompressBlocksN`); large reads run across CPUs above a threshold. Bao
-encoding reuses one parent buffer instead of allocating per node.
-
-**Assurance.** The root package is held to a port of the specification's
-reference implementation, which shares nothing with `guts`: the contract
-tests (`contract_test.go`) state every rule from the specification,
-`hash.Hash` and the package doc and check it, and the bounded walk
-(`bounded_test.go`) compares every input length around every boundary of
-the implementation, in all three modes and at every kind of split, and every
-output offset and read size around the XOF's buffers, with the reference.
-Upstream's suite retired under a mutation score: of 352 single-point mutants
-of the root and generic `guts` sources, the new suite kills every one the
-old did and four more; the survivors are dispatch choices and thresholds the
-output cannot see, bounds a loop steps past into a no-op, zero-sized outputs,
-and the odd-count merge in `guts` that its own suite is for. A fuzz target on
-the split pattern runs in CI. `bao` is held the same way to an encoder
-written from the Bao specification over that reference: the contract tests
-check both encodings, the root, the slice formats and every error against
-it, and the bounded walk every length around every chunk and group boundary
-at every group size to 128 KiB, every slice bound, and every chunk
-verification. Its old suite retired under the same measure: of 201
-single-point mutants of `bao.go`, the new suite kills every one the old did
-and twenty more; the survivors are capacity constants, bounds a loop steps
-past into a no-op, an error path's count, and a node count that comes out
-the same either way. The decoders are fuzzed on hostile encodings and slice
-bounds, and slices on arbitrary bounds against the specification. The
-amd64 assembly is generated from `avo/gen.go`, which lives in its own module
-so `avo` never enters the library's dependency graph; `just lint-generated`
-regenerates it and fails if the committed file differs, and the generated
-file passes `go vet` on amd64 (upstream's does not: its kernels broadcast
-scalar arguments straight from the stack frame, which vet's `asmdecl` rejects;
-here they go through a register first). The module builds and passes its
-tests on the `go 1.26` floor declared in `go.mod` as well as on the pinned
-toolchain; vet's `stdversion` check keeps the floor honest.
+What this fork fixes and adds that upstream does not have, each with the
+change that landed it, is the table in [`UPSTREAM.md`](./UPSTREAM.md), beside
+the fork point and what was taken from upstream since. The root package and
+`bao` are held to ports of the specification's reference implementation
+(`contract_test.go`, `bounded_test.go`), and upstream's suites retired under
+a mutation score; the amd64 assembly is generated from `avo/gen.go` in its own
+module, regenerated and compared by `just lint-generated`, and passes `go vet`.
 
 Contributions that make sense upstream should go upstream first; see the
 organization's [CONTRIBUTING](https://github.com/forkcloser/.github/blob/main/.github/CONTRIBUTING.md)
