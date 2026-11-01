@@ -3,14 +3,17 @@
 # CPU model on any x86-64 host, so the AVX-512 kernels run on every ubuntu
 # leg and not only on the runs whose runner happens to have AVX-512. Intel
 # publishes it on a download page no Renovate datasource reads, so the bump
-# is by hand, the id in the url included; the sha256 is the one that page
-# publishes beside the file.
+# is by hand, the id in the url included. The kit is verified against the
+# detached CMS signature Intel publishes beside it, chained to Sectigo's
+# code-signing root pinned by fingerprint. Intel's signing certificate
+# expires 2027-03-30: a refresh of this kit after that refuses, and a newer
+# kit carries a renewed one.
 pins:
   - name: intel-sde
-    renovate: manual intel-sde
+    renovate: manual
     version: 10.13.1-2026-07-28
     url: https://downloadmirror.intel.com/924984/sde-external-${version}-lin.tar.xz
-    verify: download
+    verify: cms https://downloadmirror.intel.com/924984/sde-external-${version}-lin.tar.xz.sig ^CN=Intel\sCorporation,O=Intel\sCorporation, http://crt.sectigo.com/SectigoPublicCodeSigningRootR46.p7c 7e76260ae69a55d3f060b0fd18b2a8c01443c87b60791030c9fa0b0585101a38
     digest:
       version: 10.13.1-2026-07-28
       sha256: 94e97d623fec54385686e1e7ba65ebc9941748c05ee451423948334892bf2b50
