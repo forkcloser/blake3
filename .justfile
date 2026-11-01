@@ -67,3 +67,48 @@ simd-info:
     else
         echo "simd: unknown (no /proc/cpuinfo or sysctl on this host)"
     fi
+
+# The AVX-512 kernels run only on an amd64 host with avx512f, which GitHub's
+# ubuntu runners have on some runs and not others. Intel SDE executes a binary
+# under an emulated CPU, so the guts tests run here under Sapphire Rapids on
+# any x86-64 Linux host. BLAKE3_REQUIRE_ISA=avx512 makes TestRequiredISA fail
+# unless the dispatcher selected the AVX-512 kernels, so a pass means those
+# kernels, not a fallback, produced the specification's results.
+# -force_emulate skx: SDE runs natively whatever the host supports, and on a
+# host with AVX-512 the kernels then compute wrong trees at random, their
+# vector state lost under Pin across Go's preemption signals. Forced
+# emulation of the Skylake-X set, which holds every instruction the kernels
+# use (AVX-512F), keeps that state in the emulator on every host (the book's
+# upstream page). Pin, which SDE is built on, needs ptrace of its own child:
+# the workflow sets kernel.yama.ptrace_scope=0 before this runs.
+[doc('Run the guts tests under Intel SDE emulating an AVX-512 CPU (linux/amd64 only)')]
+test-avx512-emulated:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    host="$(go env GOHOSTOS)/$(go env GOHOSTARCH)"
+    if [ "$host" != "linux/amd64" ]; then
+        echo "test-avx512-emulated: Intel SDE runs on linux/amd64 only; this host is $host" >&2
+        exit 1
+    fi
+    if [ "$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo 0)" != "0" ]; then
+        echo "test-avx512-emulated: kernel.yama.ptrace_scope must be 0 for SDE to run its child" >&2
+        exit 1
+    fi
+    url=$(limen pins get intel-sde url)
+    sha256=$(limen pins get intel-sde sha256)
+    mkdir -p build/sde
+    kit=build/sde/sde.tar.xz
+    if [ ! -f "$kit" ] || ! echo "$sha256  $kit" | sha256sum -c --status; then
+        curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-delay 3 -o "$kit" "$url"
+        echo "$sha256  $kit" | sha256sum -c --status
+    fi
+    rm -rf build/sde/kit
+    mkdir -p build/sde/kit
+    tar -xJf "$kit" -C build/sde/kit --strip-components=1
+    go test -c -o build/sde/guts.test ./guts
+    BLAKE3_REQUIRE_ISA=avx512 build/sde/kit/sde64 -spr -force_emulate skx -- build/sde/guts.test -test.v | tee build/sde/test.log
+    grep -q '^--- PASS: TestRequiredISA' build/sde/test.log || {
+        echo "test-avx512-emulated: the tests passed but TestRequiredISA did not run" >&2
+        exit 1
+    }
+    echo "test-avx512-emulated: guts tests passed under SDE on the AVX-512 kernels"

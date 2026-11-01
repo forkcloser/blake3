@@ -32,8 +32,30 @@ jobs:
   # internal/github/audit.go). Requiring the lanes by name would bake the
   # runner list into every ruleset; this job collapses them to one stable
   # name. A project job joins `needs` and the assertion below.
+  # Project job: the AVX-512 kernels on every run, under Intel SDE's emulation,
+  # on a runner whose own CPU may lack them. Linux amd64 alone: SDE runs there.
+  avx512:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install hermetic (pinned, verified)
+        uses: ./.github/actions/setup-hermetic
+
+      # Pin, SDE's engine, attaches to the child it runs through ptrace, which
+      # Ubuntu's Yama restricts by default; the runner's sudo is passwordless.
+      - name: Allow ptrace of a child
+        run: sudo sysctl -w kernel.yama.ptrace_scope=0
+
+      - run: just test-avx512-emulated
+
   gate:
-    needs: [limen]
+    needs: [limen, avx512]
     # always(), and the result asserted explicitly. Without always() a failed
     # or cancelled dependency SKIPS this job instead of failing it, and a
     # skipped required check does not block a merge — branch protection that
@@ -49,7 +71,8 @@ jobs:
           # Via env, never interpolated into the script: the shell sees data,
           # not something the expression layer can rewrite into code.
           RESULT: ${{ needs.limen.result }}
+          AVX512: ${{ needs.avx512.result }}
         shell: bash
         run: |
-          printf 'limen: %s\n' "$RESULT"
-          [ "$RESULT" = "success" ]
+          printf 'limen: %s\navx512: %s\n' "$RESULT" "$AVX512"
+          [ "$RESULT" = "success" ] && [ "$AVX512" = "success" ]
