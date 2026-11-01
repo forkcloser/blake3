@@ -68,6 +68,46 @@ simd-info:
         echo "simd: unknown (no /proc/cpuinfo or sysctl on this host)"
     fi
 
+# The fork's own amd64 figures (README, "Benchmarks"): the three paths on one
+# host that has AVX-512, which GitHub's ubuntu runners do on some runs and
+# not others. The bench workflow runs this on dispatch and stops, naming the
+# host, when the runner lacks avx512f: dispatch again. Emulation says nothing
+# about speed, so this is the one lane that needs the real hardware. The
+# paths are selected through GODEBUG, which golang.org/x/sys/cpu honours:
+# cpu.avx512f=off leaves AVX2, cpu.avx2=off as well leaves the pure Go.
+[doc("Benchmark the root package on the AVX-512, AVX2 and pure-Go paths (linux/amd64 with avx512f only)")]
+bench-amd64 count="6":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    host="$(go env GOHOSTOS)/$(go env GOHOSTARCH)"
+    if [ "$host" != "linux/amd64" ]; then
+        echo "bench-amd64: linux/amd64 only; this host is $host" >&2
+        exit 1
+    fi
+    model=$(grep -m1 'model name' /proc/cpuinfo | sed 's/^[^:]*: *//')
+    if ! grep -qw avx512f /proc/cpuinfo; then
+        echo "bench-amd64: this host ($model) has no avx512f; dispatch again for another runner" >&2
+        exit 1
+    fi
+    out="${LIMEN_BUILD:-.build}/bench"
+    mkdir -p "$out"
+    {
+        echo "host: $model"
+        echo "go: $(go version)"
+        echo "commit: $(git rev-parse HEAD)"
+        echo "date: $(date -u +%Y-%m-%d)"
+        echo "count: {{ count }}"
+    } | tee "$out/host.txt"
+    for path in avx512 avx2 generic; do
+        case $path in
+            avx512) debug="" ;;
+            avx2) debug="cpu.avx512f=off" ;;
+            generic) debug="cpu.avx512f=off,cpu.avx2=off" ;;
+        esac
+        echo "▶ bench-amd64: $path (GODEBUG=$debug)"
+        GODEBUG="$debug" go test -run '^$' -bench . -benchmem -count "{{ count }}" . | tee "$out/$path.txt"
+    done
+
 # The AVX-512 kernels run only on an amd64 host with avx512f, which GitHub's
 # ubuntu runners have on some runs and not others. Intel SDE executes a binary
 # under an emulated CPU, so the guts tests run here under Sapphire Rapids on

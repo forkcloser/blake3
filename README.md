@@ -100,42 +100,60 @@ this fork's benchmark (`writesizes_bench_test.go`), added because
 that size in an earlier version of the write scheduler; the same file
 compiled against upstream produced the upstream column.
 
-### Upstream's numbers (amd64, not re-measured here)
+### The three amd64 paths, same machine
 
-The figures below are upstream's, from its README, on its own hardware
-("2020 MacBook Air (i5-7600K @ 3.80GHz)"). They predate every change in this
-fork and are kept only to show the relative shape of the three paths; the
-fork's amd64 kernels have not been re-measured.
+The fork's own figures, measured 2026-11-01 by `just bench-amd64` (the
+`bench` workflow, [run 41330760868](https://github.com/forkcloser/blake3/actions/runs/41330760868))
+with Go 1.27.3 on a GitHub `ubuntu-24.04` runner whose CPU is an Intel Xeon
+Platinum 8370C (Ice Lake, 4 vCPUs, AVX-512): the AVX-512 kernels as
+dispatched, then the same binary with `GODEBUG=cpu.avx512f=off` (AVX2) and
+with `cpu.avx2=off` as well (pure Go). Medians of six runs each; half the
+range over the median is under 3% everywhere, `XOF/64`'s 2.7% the largest.
+Lower is better.
 
-#### AVX-512
+| Benchmark | AVX-512 | AVX2 | pure Go |
+| --- | ---: | ---: | ---: |
+| `Write` | 1.097 µs | 999.7 ns | 2.077 µs |
+| `WriteSizes/4096` | 8.537 µs | 8.313 µs | 7.864 µs |
+| `WriteSizes/8192` | 13.32 µs | 13.02 µs | 15.72 µs |
+| `WriteSizes/16384` | 18.33 µs | 18.01 µs | 31.13 µs |
+| `WriteSizes/24576` | 20.94 µs | 22.58 µs | 46.45 µs |
+| `WriteSizes/32768` | 35.34 µs | 31.67 µs | 66.44 µs |
+| `WriteSizes/49152` | 38.17 µs | 42.12 µs | 76.12 µs |
+| `WriteSizes/65536` | 41.18 µs | 49.22 µs | 92.01 µs |
+| `WriteSizes/131072` | 56.35 µs | 69.22 µs | 153.9 µs |
+| `WriteSizes/1048576` | 193.3 µs | 292.8 µs | 967.3 µs |
+| `XOF/64` | 8.547 ns | 8.122 ns | 8.127 ns |
+| `XOF/1024` | 231.3 ns | 299.4 ns | 1.79 µs |
+| `XOF/65536` | 20.59 µs | 28.91 µs | 73.86 µs |
+| `XOF/1048576` | 123.1 µs | 164.1 µs | 803.6 µs |
+| `Sum256/64` | 118 ns | 118.2 ns | 118 ns |
+| `Sum256/1024` | 1.788 µs | 1.789 µs | 1.788 µs |
+| `Sum256/65536` | 43.32 µs | 50.55 µs | 94.19 µs |
+| `Sum256/1048576` | 189.5 µs | 293.3 µs | 967.4 µs |
 
-```
-BenchmarkSum256/64           120 ns/op       533.00 MB/s
-BenchmarkSum256/1024        2229 ns/op       459.36 MB/s
-BenchmarkSum256/65536      16245 ns/op      4034.11 MB/s
-BenchmarkWrite               245 ns/op      4177.38 MB/s
-BenchmarkXOF                 246 ns/op      4159.30 MB/s
-```
+Throughput in GB/s, where the input is large enough for the tree to matter:
 
-#### AVX2
+| Benchmark | AVX-512 | AVX2 | pure Go |
+| --- | ---: | ---: | ---: |
+| `Write` | 0.93 | 1.02 | 0.49 |
+| `WriteSizes/65536` | 1.59 | 1.33 | 0.71 |
+| `WriteSizes/1048576` | 5.42 | 3.58 | 1.08 |
+| `XOF/65536` | 3.18 | 2.27 | 0.89 |
+| `XOF/1048576` | 8.52 | 6.39 | 1.30 |
+| `Sum256/65536` | 1.51 | 1.30 | 0.70 |
+| `Sum256/1048576` | 5.53 | 3.57 | 1.08 |
 
-```
-BenchmarkSum256/64           120 ns/op       533.00 MB/s
-BenchmarkSum256/1024        2229 ns/op       459.36 MB/s
-BenchmarkSum256/65536      31137 ns/op      2104.76 MB/s
-BenchmarkWrite               487 ns/op      2103.12 MB/s
-BenchmarkXOF                 329 ns/op      3111.27 MB/s
-```
-
-#### Pure Go
-
-```
-BenchmarkSum256/64           120 ns/op       533.00 MB/s
-BenchmarkSum256/1024        2229 ns/op       459.36 MB/s
-BenchmarkSum256/65536     133505 ns/op       490.89 MB/s
-BenchmarkWrite              2022 ns/op       506.36 MB/s
-BenchmarkXOF                1914 ns/op       534.98 MB/s
-```
+The shape: hashing, the AVX-512 kernels pay from 48 KiB up, 1.5× AVX2 and 5×
+pure Go at 1 MiB; from 4 to 32 KiB the two SIMD paths trade places within 12%,
+AVX2 ahead at 32 KiB (`Write`, at io.Copy's 32 KiB, is AVX2's by 10%), and at
+4 KiB the pure Go is the fastest of the three, by 6% over AVX2 and 9% over
+AVX-512, the kernels' fixed cost not yet amortised. XOF output is the AVX-512
+kernels' from the first kilobyte, the block kernel filling sixteen blocks at
+once. Inputs of a chunk or less (`Sum256/64`, `Sum256/1024`, `XOF/64`) never
+reach the kernels and are equal on every path. A cloud runner is one machine
+on one day; the run's raw output is the workflow's `bench-amd64` artifact, and
+another dispatch produces another.
 
 ## Shortcomings
 
