@@ -180,8 +180,9 @@ func TestContractParentNode(t *testing.T) {
 }
 
 // TestContractCompressEigentree: every power of two of chunks to 1024, at
-// counters aligned and not, is the specification's tree; anything else
-// panics.
+// counters on both sides of 2^32 (the last aligned tree below it, where every
+// lane's low counter word is at its highest, and trees above it, where the
+// high word is set), is the specification's tree; anything else panics.
 func TestContractCompressEigentree(t *testing.T) {
 	t.Parallel()
 
@@ -191,7 +192,10 @@ func TestContractCompressEigentree(t *testing.T) {
 	data := testData(1024 * guts.ChunkSize)
 
 	for chunks := 1; chunks <= 1024; chunks *= 2 {
-		for _, counter := range []uint64{0, uint64(chunks), 3 * uint64(chunks), 1 << 32} {
+		for _, counter := range []uint64{
+			0, uint64(chunks), 3 * uint64(chunks),
+			(1 << 32) - uint64(chunks), 1 << 32, (1 << 40) + 5*uint64(chunks),
+		} {
 			for _, flags := range []uint32{0, guts.FlagDeriveKeyMaterial} {
 				want := refSubtree(data[:chunks*guts.ChunkSize], testKey, counter, flags)
 
