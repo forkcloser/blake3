@@ -1,0 +1,16 @@
+# The emulator the avx512 lane runs the kernels under (book/tooling.md,
+# "Pinned artifacts beyond aqua"): Intel SDE executes a binary with a chosen
+# CPU model on any x86-64 host, so the AVX-512 kernels run on every ubuntu
+# leg and not only on the runs whose runner happens to have AVX-512. Intel
+# publishes it on a download page no Renovate datasource reads, so the bump
+# is by hand, the id in the url included; the sha256 is the one that page
+# publishes beside the file.
+pins:
+  - name: intel-sde
+    renovate: manual intel-sde
+    version: 10.13.1-2026-07-28
+    url: https://downloadmirror.intel.com/924984/sde-external-${version}-lin.tar.xz
+    verify: download
+    digest:
+      version: 10.13.1-2026-07-28
+      sha256: 94e97d623fec54385686e1e7ba65ebc9941748c05ee451423948334892bf2b50
