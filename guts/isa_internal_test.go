@@ -7,10 +7,11 @@ import (
 	"testing"
 )
 
-// TestRequiredISA fails when BLAKE3_REQUIRE_ISA names kernels this host does
-// not dispatch. The emulated AVX-512 lane sets it to avx512: the other tests
-// then prove those kernels, not a fallback the host happened to select,
-// produced the specification's results. Unset, the test is skipped.
+// TestRequiredISA fails when BLAKE3_REQUIRE_ISA names a dispatch arm this
+// process does not take: avx512, avx2, or generic (every kernel off, the
+// amd64 fallbacks). The ISA lanes set it: the other tests then prove that
+// arm, not whichever the host happened to select, produced the
+// specification's results. Unset, the test is skipped.
 func TestRequiredISA(t *testing.T) {
 	t.Parallel()
 
@@ -22,10 +23,16 @@ func TestRequiredISA(t *testing.T) {
 			t.Fatal("BLAKE3_REQUIRE_ISA=avx512: this host does not dispatch the AVX-512 kernels")
 		}
 	case "avx2":
-		if !haveAVX2 {
-			t.Fatal("BLAKE3_REQUIRE_ISA=avx2: this host does not dispatch the AVX2 kernels")
+		// The dispatch prefers AVX-512 wherever both are on, so AVX2 alone is
+		// what this arm means.
+		if !haveAVX2 || haveAVX512 {
+			t.Fatal("BLAKE3_REQUIRE_ISA=avx2: the AVX2 kernels are not dispatched alone; GODEBUG turns avx512f off")
+		}
+	case "generic":
+		if haveAVX2 || haveAVX512 {
+			t.Fatal("BLAKE3_REQUIRE_ISA=generic: this host dispatches SIMD kernels; GODEBUG turns them off")
 		}
 	default:
-		t.Fatalf("BLAKE3_REQUIRE_ISA=%q: the kernels are avx2 and avx512", isa)
+		t.Fatalf("BLAKE3_REQUIRE_ISA=%q: the arms are avx512, avx2 and generic", isa)
 	}
 }

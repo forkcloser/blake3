@@ -54,8 +54,32 @@ jobs:
 
       - run: just test-avx512-emulated
 
+  # Project job: the other two amd64 dispatch arms, each required by name. The
+  # verify legs run whatever kernels their host has and assert nothing about
+  # which arm ran; this one forces the arm and fails unless it was taken.
+  isa:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        isa: [avx2, generic]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install hermetic (pinned, verified)
+        uses: ./.github/actions/setup-hermetic
+
+      - env:
+          ISA: ${{ matrix.isa }}
+        run: just test-isa "$ISA"
+
   gate:
-    needs: [limen, avx512]
+    needs: [limen, avx512, isa]
     # always(), and the result asserted explicitly. Without always() a failed
     # or cancelled dependency SKIPS this job instead of failing it, and a
     # skipped required check does not block a merge — branch protection that
@@ -72,7 +96,8 @@ jobs:
           # not something the expression layer can rewrite into code.
           RESULT: ${{ needs.limen.result }}
           AVX512: ${{ needs.avx512.result }}
+          ISA: ${{ needs.isa.result }}
         shell: bash
         run: |
-          printf 'limen: %s\navx512: %s\n' "$RESULT" "$AVX512"
-          [ "$RESULT" = "success" ] && [ "$AVX512" = "success" ]
+          printf 'limen: %s\navx512: %s\nisa: %s\n' "$RESULT" "$AVX512" "$ISA"
+          [ "$RESULT" = "success" ] && [ "$AVX512" = "success" ] && [ "$ISA" = "success" ]

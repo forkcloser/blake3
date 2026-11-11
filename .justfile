@@ -108,6 +108,41 @@ bench-amd64 count="6":
         GODEBUG="$debug" go test -run '^$' -bench . -benchmem -count "{{ count }}" . | tee "$out/$path.txt"
     done
 
+# One amd64 dispatch arm, required. The verify legs run whatever kernels their
+# host has and assert nothing about which arm ran; here GODEBUG picks it
+# (golang.org/x/sys/cpu honours cpu.<feature>=off) and BLAKE3_REQUIRE_ISA makes
+# TestRequiredISA fail unless that arm was taken. avx2 turns avx512f off, so an
+# AVX-512 host still runs the AVX2 kernels; generic turns both off, so the
+# amd64 fallback arms run. avx512 is test-avx512-emulated's: no hosted runner
+# guarantees it. The output is captured verbosely because a passing test
+# leaves no trace otherwise, and the pass is accepted only if TestRequiredISA
+# is among them.
+[doc('Run the suite with one amd64 dispatch arm required: avx2 or generic')]
+test-isa isa:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    arch="$(go env GOHOSTARCH)"
+    if [ "$arch" != "amd64" ]; then
+        echo "test-isa: the dispatch arms exist on amd64 only; this host is $arch" >&2
+        exit 1
+    fi
+    case "{{ isa }}" in
+        avx2) debug="cpu.avx512f=off" ;;
+        generic) debug="cpu.avx512f=off,cpu.avx2=off" ;;
+        *)
+            echo "test-isa: the arm is avx2 or generic, not {{ isa }}" >&2
+            exit 1
+            ;;
+    esac
+    out="${LIMEN_BUILD:-.build}/isa"
+    mkdir -p "$out"
+    GODEBUG="$debug" BLAKE3_REQUIRE_ISA="{{ isa }}" GOTESTSUM_FORMAT=standard-verbose just do test go unit | tee "$out/{{ isa }}.log"
+    grep -q '^--- PASS: TestRequiredISA' "$out/{{ isa }}.log" || {
+        echo "test-isa: the tests passed but TestRequiredISA did not run" >&2
+        exit 1
+    }
+    echo "test-isa: the suite passed with the {{ isa }} arm required"
+
 # The AVX-512 kernels run only on an amd64 host with avx512f, which GitHub's
 # ubuntu runners have on some runs and not others. Intel SDE executes a binary
 # under an emulated CPU, so the guts tests run here under Sapphire Rapids on

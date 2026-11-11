@@ -174,4 +174,8 @@ is arm64. So the AVX-512 kernels run on every CI run under Intel SDE's
 emulation (the `avx512` job, `just test-avx512-emulated`), which checks what
 they compute and nothing about how fast; `just bench-amd64` times the real
 kernels when its dispatch draws a host that has them, and stops, naming the
-host, when it does not.
+host, when it does not. The other two amd64 dispatch arms are required the
+same way on every run (the `isa` job, `just test-isa avx2` and `just test-isa
+generic`): the arm is forced through `GODEBUG`, and the suite passes only if
+`TestRequiredISA` saw that arm taken, since the verify legs run whatever
+kernels their host has and prove nothing about which.
