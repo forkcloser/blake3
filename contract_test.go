@@ -30,6 +30,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"runtime"
 	"testing"
 
 	"github.com/forkcloser/blake3"
@@ -539,6 +540,49 @@ func TestContractEigentreePrecondition(t *testing.T) {
 	for _, n := range []int{guts.ChunkSize, 2 * guts.ChunkSize, 16 * guts.ChunkSize, 32 * guts.ChunkSize} {
 		if panics(n) {
 			t.Errorf("CompressEigentree refused %d bytes", n)
+		}
+	}
+}
+
+// TestContractGOMAXPROCS: the digest and the output stream do not depend on
+// how many CPUs the scheduler has. GOMAXPROCS decides how a large write's
+// tree and a large aligned read are dealt out: at 1 both run serially, at 3
+// the work does not divide evenly and the remainder folds into the first
+// goroutines, and the default on a many-core machine takes neither path.
+// Not parallel: it sets a process-wide value, and restores it.
+func TestContractGOMAXPROCS(t *testing.T) { //nolint:paralleltest // sets GOMAXPROCS for the process
+	in := make([]byte, 1<<20)
+	for i := range in {
+		in[i] = byte(i * 7)
+	}
+
+	const out = 64 << 10
+
+	wantSum := refimpl.Hash(in, 32)
+	wantXOF := refimpl.Hash(in, out)
+	prev := runtime.GOMAXPROCS(0)
+
+	t.Cleanup(func() { runtime.GOMAXPROCS(prev) })
+
+	for _, procs := range []int{1, 3} {
+		runtime.GOMAXPROCS(procs)
+
+		h := blake3.New(32, nil)
+		if _, err := h.Write(in); err != nil {
+			t.Fatalf("GOMAXPROCS=%d: Write: %v", procs, err)
+		}
+
+		if got := h.Sum(nil); !bytes.Equal(got, wantSum) {
+			t.Errorf("GOMAXPROCS=%d: Sum = %x, want %x", procs, got, wantSum)
+		}
+
+		buf := make([]byte, out)
+		if _, err := io.ReadFull(h.XOF(), buf); err != nil {
+			t.Fatalf("GOMAXPROCS=%d: XOF read: %v", procs, err)
+		}
+
+		if !bytes.Equal(buf, wantXOF) {
+			t.Errorf("GOMAXPROCS=%d: XOF output differs from the reference", procs)
 		}
 	}
 }

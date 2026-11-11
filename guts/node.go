@@ -40,8 +40,11 @@ const (
 	// large eigentree is compressed in parallel: one MaxSIMD-chunk group,
 	// which measured best (32 KiB per goroutine was ~10% slower at 64 KiB
 	// and 128 KiB trees). What the run-dealing buys over one goroutine per
-	// group is a cap of NumCPU goroutines per tree — a 1 MiB tree spawned
-	// 64 before — and a serial path for a tree that does not split.
+	// group is a cap of GOMAXPROCS goroutines per tree — a 1 MiB tree
+	// spawned 64 before — and a serial path for a tree that does not split.
+	// GOMAXPROCS, not NumCPU: it is what the scheduler will actually run
+	// on, and it follows a container's CPU quota and the caller's setting
+	// where NumCPU reports the machine.
 	minParallelBytes = 16 * 1024
 )
 
@@ -148,8 +151,8 @@ func compressGroups(buf []byte, key *[8]uint32, counter uint64, flags uint32, gr
 	}
 
 	const groupsPerGoroutine = minParallelBytes / (MaxSIMD * ChunkSize)
-	// #nosec G115 -- NumCPU is a small positive count
-	if par := min(groups/groupsPerGoroutine, uint64(runtime.NumCPU())); par > 1 {
+	// #nosec G115 -- GOMAXPROCS is a small positive count
+	if par := min(groups/groupsPerGoroutine, uint64(runtime.GOMAXPROCS(0))); par > 1 {
 		// Deal groups out in par near-equal contiguous runs; the
 		// remainder folds into the runs rather than a second spawn.
 		per, extra := groups/par, groups%par

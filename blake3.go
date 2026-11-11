@@ -499,7 +499,9 @@ func (or *OutputReader) readAligned(p []byte) []byte {
 
 	const minBufsPerCPU = minParallelReadBytes / outputBufSize
 
-	par := min(numBufs/minBufsPerCPU, runtime.NumCPU())
+	// GOMAXPROCS, not NumCPU: what the scheduler will run on, a container's
+	// quota and the caller's setting included.
+	par := min(numBufs/minBufsPerCPU, runtime.GOMAXPROCS(0))
 	if par <= 1 {
 		guts.CompressBlocks((*[outputBufSize]byte)(p), or.n)
 		or.off += outputBufSize
