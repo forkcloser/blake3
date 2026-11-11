@@ -215,6 +215,25 @@ func TestContractErrors(t *testing.T) {
 		t.Errorf("ExtractSlice with a failing destination: %v", err)
 	}
 
+	// The whole content as a slice: four groups, so the walk goes on past
+	// the failed write and stops on the error it recorded.
+	var slice bytes.Buffer
+	if err := bao.ExtractSlice(&slice, bytes.NewReader(enc), nil, 0, 0, uint64(len(data))); err != nil {
+		t.Fatal(err)
+	}
+
+	if ok, err := bao.DecodeSlice(
+		failingWriter{errBoom},
+		&slice,
+		0,
+		0,
+		uint64(len(data)),
+		root,
+	); ok ||
+		!errors.Is(err, errBoom) {
+		t.Errorf("DecodeSlice with a failing destination: %v, %v", ok, err)
+	}
+
 	if err := bao.ExtractSlice(io.Discard, failingReader{errBoom}, nil, 0, 0, 10); !errors.Is(err, errBoom) {
 		t.Errorf("ExtractSlice with a failing source: %v", err)
 	}
