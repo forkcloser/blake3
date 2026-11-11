@@ -29,8 +29,8 @@ func BenchmarkWrite(b *testing.B) {
 }
 
 // BenchmarkWriteSizes drives Hasher.Write with fixed-size slices, the way
-// io.Copy (32 KiB) and bufio callers feed it: the sizes that decide
-// minParallelWriteBytes and the goroutine dealing in writeTreesParallel.
+// io.Copy (32 KiB) and bufio callers feed it: the sizes that decide how
+// compressTrees deals a write's trees out, and whether at all.
 func BenchmarkWriteSizes(b *testing.B) {
 	for _, size := range []int{4 << 10, 8 << 10, 16 << 10, 24 << 10, 32 << 10, 48 << 10, 64 << 10, 128 << 10, 1 << 20} {
 		b.Run(strconv.Itoa(size), func(b *testing.B) {

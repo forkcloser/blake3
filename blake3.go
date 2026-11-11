@@ -40,91 +40,61 @@ type Hasher struct {
 	size  int // output size, for Sum
 
 	// log(n) set of Merkle subtree roots, at most one per height.
-	stack   [64][8]uint32
-	counter uint64 // number of buffers hashed; also serves as a bit vector indicating which stack elems are occupied
+	stack [64][8]uint32
+	// counter is the number of chunks compressed into the stack, and a bit
+	// vector of the heights it occupies. Write keeps it a multiple of
+	// guts.MaxSIMD.
+	counter uint64
 
-	buf    [guts.ChunkSize]byte
+	// buf is the input not yet compressed: the tail, held back because the
+	// last chunk has to wait for Sum, where it is the root or the tree's
+	// right edge. How much is held is the path's: one chunk in pure Go, a
+	// whole group of guts.MaxSIMD chunks where the SIMD kernels run, so
+	// that counter stays group-aligned, every tree Write compresses is
+	// whole groups, and the kernels, which compute all their lanes
+	// whatever they are handed, run full.
+	buf    [guts.MaxSIMD * guts.ChunkSize]byte
 	buflen int
 }
 
 // Write implements hash.Hash. It always returns len(p), nil.
 func (h *Hasher) Write(p []byte) (int, error) {
 	lenp := len(p)
+	hold := guts.KernelWidth() * guts.ChunkSize
 
-	// align to chunk boundary
+	// Fill the held buffer first; input that fits in it is held back.
 	if h.buflen > 0 {
-		n := copy(h.buf[h.buflen:], p)
+		n := copy(h.buf[h.buflen:hold], p)
 		h.buflen += n
 		p = p[n:]
 	}
 
-	if h.buflen == len(h.buf) && len(p) > 0 {
-		n := guts.CompressChunk(h.buf[:], &h.key, h.counter, h.flags)
-		h.pushSubtree(guts.ChainingValue(n), 0)
-		h.buflen = 0
+	if len(p) == 0 {
+		return lenp, nil
 	}
 
-	// process full chunks
-	if len(p) > len(h.buf) {
-		rem := len(p) % len(h.buf)
-		if rem == 0 {
-			rem = len(h.buf) // don't prematurely compress
-		}
+	// Past the buffer, which is now empty or full (a partial one absorbed
+	// all of p above). A full buffer with input behind it is complete: a
+	// chunk is compressed on the spot, a group joins the write's trees to
+	// be dealt out with them. Then p's whole units follow, and p's last
+	// unit, full or partial, is held back in its turn.
+	flush := h.buflen == hold
+	if flush && hold == guts.ChunkSize {
+		h.pushSubtree(guts.ChainingValue(guts.CompressChunk(h.buf[:hold], &h.key, h.counter, h.flags)), 0)
 
-		eigenbuf := p[:len(p)-rem]
-		trees := guts.Eigentrees(h.counter, uint64(len(eigenbuf)/guts.ChunkSize))
-
-		// A Write's eigentrees form a cascade of independent subtrees: a
-		// 64 KiB write at counter 0 is [32,16,8,4,2,1] chunks (the last
-		// chunk is held back), a 1 MiB one is ten trees. What decides
-		// whether threads pay for themselves is the write's total size,
-		// not any one tree's: below minParallelWriteBytes it all runs
-		// inline, serially — no goroutines, no scratch, nothing for a
-		// closure to capture and drag onto the heap. Above it, the trees
-		// large enough to fan out internally each get a goroutine, and the
-		// tail of small trees — which together are nearly the size of the
-		// largest — go to one more, so they overlap the big ones instead of
-		// running serially after them. CVs are pushed in tree order once
-		// all are in, since the CV stack merges depend on that order.
-		if len(eigenbuf) < minParallelWriteBytes {
-			counter := h.counter
-
-			for _, height := range trees {
-				buf := eigenbuf[:(1<<height)*guts.ChunkSize]
-				eigenbuf = eigenbuf[len(buf):]
-				h.pushSubtree(guts.ChainingValue(guts.CompressEigentree(buf, &h.key, counter, h.flags)), height)
-				counter += 1 << height
-			}
-		} else {
-			h.writeTreesParallel(eigenbuf, trees)
-		}
-
-		p = p[len(p)-rem:]
+		flush = false
 	}
 
-	// buffer remaining partial chunk
-	n := copy(h.buf[h.buflen:], p)
-	h.buflen += n
+	rem := len(p) % hold
+	if rem == 0 {
+		rem = hold // never compress the last unit early
+	}
+
+	h.compressTrees(flush, p[:len(p)-rem])
+	h.buflen = copy(h.buf[:hold], p[len(p)-rem:])
 
 	return lenp, nil
 }
-
-// minParallelWriteBytes is the least eigentree payload in one Write worth
-// compressing concurrently. Measured on the generic (non-SIMD) path,
-// darwin/arm64, against upstream v1.4.1 on the same host (see
-// BenchmarkWriteSizes): below it the serial path wins — by ~45% over
-// upstream's goroutine-per-tree at 4 KiB writes, ~7% at 16 KiB — and from
-// 32 KiB up the scheduling in writeTreesParallel beats both upstream and
-// the serial path by 9–20%. Two things about the value:
-//
-//   - A "32 KiB" write — io.Copy's buffer, the common case — is 31 KiB of
-//     trees, the last chunk being held back. An earlier threshold of exactly
-//     32 KiB therefore ran it serially, 20% slower than upstream.
-//   - 16 KiB (one MaxSIMD-chunk tree) was tried and lost: a 24 KiB write is
-//     [16,4,2,1] chunks, and paying a goroutine for a 7-chunk tail made it
-//     13% slower than serial and far noisier. 24 KiB writes are the one
-//     size left ~4% behind upstream.
-const minParallelWriteBytes = 24 * 1024
 
 // Sum implements hash.Hash: it appends the current digest to b and returns
 // the resulting slice, without changing the underlying state. A digest longer
@@ -184,10 +154,11 @@ func (h *Hasher) pushSubtree(cv [8]uint32, height int) {
 	h.counter += 1 << height
 }
 
-// rootNode computes the root of the Merkle tree. It does not modify the
-// stack.
+// rootNode computes the root of the Merkle tree: the buffered group's node,
+// a chunk or a parent, joined to the stack from the lowest occupied height
+// up. It does not modify the stack.
 func (h *Hasher) rootNode() guts.Node {
-	n := guts.CompressChunk(h.buf[:h.buflen], &h.key, h.counter, h.flags)
+	n := guts.CompressBuffer(&h.buf, h.buflen, &h.key, h.counter, h.flags)
 	for i := bits.TrailingZeros64(h.counter); i < bits.Len64(h.counter); i++ {
 		if h.hasSubtreeAtHeight(i) {
 			n = guts.ParentNode(h.stack[i], guts.ChainingValue(n), &h.key, h.flags)
@@ -199,80 +170,155 @@ func (h *Hasher) rootNode() guts.Node {
 	return n
 }
 
-// writeTreesParallel compresses a Write's eigentrees concurrently: each tree
-// of MaxSIMD chunks or more gets a goroutine (a MaxSIMD-chunk tree is ~10 µs
-// of work, worth a thread; larger ones fan out further inside
-// CompressEigentree), and each run of smaller trees shares one. Counting
-// the MaxSIMD-chunk tree as "small" was the earlier mistake: a 32 KiB write
-// is [16,8,4,2,1] chunks, all of which then went to a single goroutine —
-// the serial path plus a spawn.
-// Every CV is pushed in tree order once all are in. Kept out of Write so the
-// goroutine closure and its captures live only on this path.
-func (h *Hasher) writeTreesParallel(eigenbuf []byte, trees []int) {
-	cvs := make([][8]uint32, len(trees))
+// compressTrees compresses the complete trees of a Write, the held group
+// when flush is set and then eigenbuf's eigentrees, and pushes their
+// chaining values in tree order. A lone tree runs on the caller, fanning
+// out inside CompressEigentree when it is large; several go to goroutines
+// once they hold one and a half times the parallel grain between them, the
+// grain being what one goroutine is worth on the dispatched path. In pure
+// Go that is 24 KiB, measured against upstream's goroutine per tree on
+// darwin/arm64: below it the serial path won, by ~45% at 4 KiB writes and
+// ~7% at 16 KiB; from io.Copy's 32 KiB, which is 31 KiB of trees after the
+// held chunk, the dealing below won by 9–20%; and a 24 KiB write, which is
+// [16, 4, 2, 1] chunks, lost 13% to a goroutine for its 7-chunk tail.
+func (h *Hasher) compressTrees(flush bool, eigenbuf []byte) {
+	// A climb of at most 64 trees to an aligned counter, then a descent of
+	// at most 64: a fixed array, so the serial path allocates nothing.
+	var heights [128]int
+
+	trees := heights[:0]
 	counter := h.counter
 
+	if flush {
+		trees = append(trees, groupHeight)
+		counter += guts.MaxSIMD
+	}
+
+	trees = guts.AppendEigentrees(trees, counter, uint64(len(eigenbuf)/guts.ChunkSize))
+	if len(trees) == 0 {
+		return
+	}
+
+	total := len(eigenbuf)
+	if flush {
+		total += len(h.buf)
+	}
+
+	if grain := guts.ParallelGrain(); len(trees) == 1 || total < grain+grain/2 {
+		h.compressTreesSerial(flush, eigenbuf, trees)
+	} else {
+		h.compressTreesParallel(flush, eigenbuf, trees)
+	}
+}
+
+// groupHeight is the height of a tree of guts.MaxSIMD chunks, the held
+// group's; the array below fails to compile when the constant drifts.
+const groupHeight = 4
+
+var _ [0]struct{} = [guts.MaxSIMD - 1<<groupHeight]struct{}{}
+
+// The held group goes through CompressBuffer, not CompressEigentree: the
+// latter's buffer reaches goroutines of its own for a large tree, and
+// h.buf there would move a stack Hasher (Sum512's, DeriveKey's) to the heap.
+func (h *Hasher) compressTreesSerial(flush bool, eigenbuf []byte, trees []int) {
+	counter := h.counter
+
+	for i, height := range trees {
+		var n guts.Node
+
+		if flush && i == 0 {
+			n = guts.CompressBuffer(&h.buf, len(h.buf), &h.key, counter, h.flags)
+		} else {
+			size := (1 << height) * guts.ChunkSize
+			n = guts.CompressEigentree(eigenbuf[:size], &h.key, counter, h.flags)
+			eigenbuf = eigenbuf[size:]
+		}
+
+		h.pushSubtree(guts.ChainingValue(n), height)
+		counter += 1 << height
+	}
+}
+
+// compressTreesParallel is compressTrees' concurrent half, kept apart so the
+// goroutine closure and its captures reach the heap on this path alone. A
+// tree of a group or more is a unit of its own; the trees below a group that
+// the pure-Go path leaves, holding one chunk back, are batched into runs
+// wherever they sit (Eigentrees climbs before it descends, so a run precedes
+// the first large tree as readily as it follows the last), each run one
+// unit, so that no run executes on the caller after the large trees are
+// spawned. A unit recomputes its own heights: the sub-sequence of a tree
+// sequence is the sequence of its own range, and handing a unit the shared
+// slice would move the caller's array to the heap. The held group is the
+// caller's own unit, compressed while the others wake, from the buffer no
+// goroutine reads.
+func (h *Hasher) compressTreesParallel(flush bool, eigenbuf []byte, trees []int) {
+	cvs := make([][8]uint32, len(trees))
+
 	var wg sync.WaitGroup
-	// The small trees form a contiguous tail: Eigentrees climbs (heights
-	// increase while the counter is not yet aligned) then descends, and
-	// only the descent can hold trees below MaxSIMD chunks after a large
-	// one — but a climb of small trees precedes the first large one too.
-	// So small trees are grouped into runs wherever they sit, each run
-	// one goroutine, so no run of them ever executes on the caller.
-	runStart := -1
-	flushRun := func(end int, bufStart []byte, ctr uint64) {
+
+	unit := func(idx int, buf []byte, counter uint64) {
 		wg.Add(1)
-		go func(lo, hi int, buf []byte, counter uint64) {
+
+		go func(idx int, buf []byte, counter uint64, key [8]uint32, flags uint32) {
 			defer wg.Done()
 
-			for i := lo; i < hi; i++ {
-				height := trees[i]
+			var heights [128]int
+
+			for i, height := range guts.AppendEigentrees(heights[:0], counter, uint64(len(buf)/guts.ChunkSize)) {
 				n := (1 << height) * guts.ChunkSize
-				cvs[i] = guts.ChainingValue(guts.CompressEigentree(buf[:n], &h.key, counter, h.flags))
+				cvs[idx+i] = guts.ChainingValue(guts.CompressEigentree(buf[:n], &key, counter, flags))
 				buf = buf[n:]
 				counter += 1 << height
 			}
-		}(runStart, end, bufStart, ctr)
-
-		runStart = -1
+		}(idx, buf, counter, h.key, h.flags)
 	}
 
-	var (
-		runBuf     []byte
-		runCounter uint64
-	)
-
-	for i, height := range trees {
-		buf := eigenbuf[:(1<<height)*guts.ChunkSize]
-		if 1<<height < guts.MaxSIMD {
-			if runStart < 0 {
-				runStart, runBuf, runCounter = i, eigenbuf, counter
-			}
-		} else {
-			if runStart >= 0 {
-				flushRun(i, runBuf, runCounter)
-			}
-
-			wg.Add(1)
-			go func(i int, buf []byte, counter uint64) {
-				defer wg.Done()
-
-				cvs[i] = guts.ChainingValue(guts.CompressEigentree(buf, &h.key, counter, h.flags))
-			}(i, buf, counter)
-		}
-
-		eigenbuf = eigenbuf[len(buf):]
-		counter += 1 << height
+	first, counter := 0, h.counter
+	if flush {
+		first, counter = 1, counter+guts.MaxSIMD
 	}
 
-	if runStart >= 0 {
-		flushRun(len(trees), runBuf, runCounter)
+	dealUnits(trees[first:], first, eigenbuf, counter, unit)
+
+	if flush {
+		cvs[0] = guts.ChainingValue(guts.CompressBuffer(&h.buf, len(h.buf), &h.key, h.counter, h.flags))
 	}
 
 	wg.Wait()
 
 	for i, height := range trees {
 		h.pushSubtree(cvs[i], height)
+	}
+}
+
+// dealUnits hands eigenbuf's trees, numbered from idx, to unit: a tree of a
+// group or more on its own, a run of smaller trees together.
+func dealUnits(trees []int, idx int, eigenbuf []byte, counter uint64, unit func(idx int, buf []byte, counter uint64)) {
+	runStart, runBuf, runCounter := -1, eigenbuf, counter
+
+	for i, height := range trees {
+		n := (1 << height) * guts.ChunkSize
+
+		if 1<<height < guts.MaxSIMD {
+			if runStart < 0 {
+				runStart, runBuf, runCounter = i, eigenbuf, counter
+			}
+		} else {
+			if runStart >= 0 {
+				unit(idx+runStart, runBuf[:len(runBuf)-len(eigenbuf)], runCounter)
+
+				runStart = -1
+			}
+
+			unit(idx+i, eigenbuf[:n], counter)
+		}
+
+		eigenbuf = eigenbuf[n:]
+		counter += 1 << height
+	}
+
+	if runStart >= 0 {
+		unit(idx+runStart, runBuf[:len(runBuf)-len(eigenbuf)], runCounter)
 	}
 }
 
@@ -358,16 +404,21 @@ func DeriveKey(subKey []byte, ctx string, srcKey []byte) {
 	// construct the derivation Hasher
 	const derivationIVLen = 32
 
-	h := newHasher(guts.IV, guts.FlagDeriveKeyContext, 32)
+	// Both hashers live on the stack: a Hasher is a group buffer and a
+	// stack, too much to allocate twice for one derivation.
+	h := Hasher{key: guts.IV, flags: guts.FlagDeriveKeyContext, size: derivationIVLen}
 	h.Write([]byte(ctx))
-	derivationIV := h.Sum(make([]byte, 0, derivationIVLen))
+
+	var derivationIV [derivationIVLen]byte
+
+	h.Sum(derivationIV[:0])
 
 	var ivWords [8]uint32
 	for i := range ivWords {
 		ivWords[i] = binary.LittleEndian.Uint32(derivationIV[i*4:])
 	}
 
-	h = newHasher(ivWords, guts.FlagDeriveKeyMaterial, 0)
+	h = Hasher{key: ivWords, flags: guts.FlagDeriveKeyMaterial}
 	// derive the subKey
 	h.Write(srcKey)
 	// From offset 0 the read cannot reach the end of the stream; see Sum.

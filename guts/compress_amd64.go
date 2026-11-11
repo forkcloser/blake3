@@ -8,6 +8,10 @@ import (
 // buffer handed to CompressBuffer whatever buflen says; see CompressEigentree.
 const simdReadsFullBuffer = true
 
+// kernelsDispatched reports whether CompressBuffer and CompressBlocks take a
+// SIMD kernel on this host.
+func kernelsDispatched() bool { return haveAVX512 || haveAVX2 }
+
 //go:noescape
 func compressChunksAVX512(cvs *[16][8]uint32, buf *[16 * ChunkSize]byte, key *[8]uint32, counter uint64, flags uint32)
 
