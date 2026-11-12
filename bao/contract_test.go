@@ -30,8 +30,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/forkcloser/blake3"
-	"github.com/forkcloser/blake3/bao"
+	"github.com/forkcloser/blake3/v2"
+	"github.com/forkcloser/blake3/v2/bao"
 )
 
 // cData is n bytes of BLAKE3 output, the data these tests encode.

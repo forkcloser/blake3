@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/forkcloser/blake3"
+	"github.com/forkcloser/blake3/v2"
 )
 
 // The guards: the package exists for speed on large inputs and outputs, and

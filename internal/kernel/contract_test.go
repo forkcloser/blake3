@@ -27,8 +27,8 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"github.com/forkcloser/blake3/internal/kernel"
-	"github.com/forkcloser/blake3/internal/refimpl"
+	"github.com/forkcloser/blake3/v2/internal/kernel"
+	"github.com/forkcloser/blake3/v2/internal/refimpl"
 )
 
 // refSubtree is the specification's tree over data as n whole chunks (or a

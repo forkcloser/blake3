@@ -3,7 +3,7 @@ package kernel_test
 import (
 	"testing"
 
-	"github.com/forkcloser/blake3/internal/kernel"
+	"github.com/forkcloser/blake3/v2/internal/kernel"
 )
 
 // FuzzCompressBuffer: whatever the bytes and their count up to a SIMD group,

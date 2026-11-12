@@ -13,7 +13,7 @@
 // arguments.
 package guts
 
-import "github.com/forkcloser/blake3/internal/kernel"
+import "github.com/forkcloser/blake3/v2/internal/kernel"
 
 // The domain flags a Node carries, and the tree's fixed sizes in bytes.
 const (

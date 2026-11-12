@@ -29,7 +29,7 @@ golangci:
           # Hasher.Write never fails, as hash.Hash's contract says; errcheck
           # exempts hash.Hash.Write through the interface but not on the
           # concrete type.
-          - (*github.com/forkcloser/blake3.Hasher).Write
+          - (*github.com/forkcloser/blake3/v2.Hasher).Write
       depguard:
         rules:
           main:

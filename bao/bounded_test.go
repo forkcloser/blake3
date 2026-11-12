@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/forkcloser/blake3/bao"
+	"github.com/forkcloser/blake3/v2/bao"
 )
 
 // dataLengths are the lengths walked for a group size: each chunk boundary

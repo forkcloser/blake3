@@ -38,9 +38,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/forkcloser/blake3"
-	"github.com/forkcloser/blake3/internal/kernel"
-	"github.com/forkcloser/blake3/internal/refimpl"
+	"github.com/forkcloser/blake3/v2"
+	"github.com/forkcloser/blake3/v2/internal/kernel"
+	"github.com/forkcloser/blake3/v2/internal/refimpl"
 )
 
 // cVectors is testdata/vectors.json, the reference implementation's test

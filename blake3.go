@@ -13,8 +13,8 @@
 // to satisfy [hash.Hash] is always nil), and Sum leaves the state untouched,
 // so Sum may be called repeatedly and interleaved with Write.
 //
-// The subpackages are [github.com/forkcloser/blake3/bao], verified streaming
-// over BLAKE3's tree, and [github.com/forkcloser/blake3/guts], the tree-hashing
+// The subpackages are [github.com/forkcloser/blake3/v2/bao], verified streaming
+// over BLAKE3's tree, and [github.com/forkcloser/blake3/v2/guts], the tree-hashing
 // primitives both packages are built from.
 package blake3
 
@@ -28,7 +28,7 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/forkcloser/blake3/internal/kernel"
+	"github.com/forkcloser/blake3/v2/internal/kernel"
 )
 
 // The digest's size and the hash's block size, in bytes. Longer output is
