@@ -50,16 +50,19 @@ func KernelWidth() int {
 }
 
 // ParallelGrain is the least input, in bytes, one goroutine is handed when a
-// tree is compressed in parallel: one MaxSIMD-chunk group in pure Go, where
-// that group is 15–19 µs of work (15 on a Xeon 8370C at 1 MiB, 19 on an M5
-// Pro at a 16 KiB write) and measured best (32 KiB per goroutine was ~10%
-// slower at 64 KiB and 128 KiB trees), and two groups where the SIMD
-// kernels are dispatched, whose group is ~4.8 µs on that Xeon, under the
-// cost of waking a thread for it. A caller spreading trees of its own
-// across goroutines should hand each at least this much.
+// tree is compressed in parallel: the pure-Go group's worth of work on the
+// dispatched path. In pure Go that is one MaxSIMD-chunk group, 15–19 µs
+// (15 on a Xeon 8370C at 1 MiB, 19 on an M5 Pro at a 16 KiB write; 32 KiB
+// per goroutine measured ~10% slower at 64 KiB and 128 KiB trees). Under
+// the SIMD kernels it is eight groups: on the 4-vCPU Xeon 8573C runner
+// where a pure-Go group is 32 µs, eight kernel groups are 33 µs under
+// AVX-512 and 50 under AVX2, and with two groups a grain every write from
+// 48 KiB to 128 KiB cost 6–25 µs more than its serial calls, the wake of
+// its goroutines, while 1 MiB alone gained. A caller spreading trees of
+// its own across goroutines should hand each at least this much.
 func ParallelGrain() int {
 	if kernelsDispatched() {
-		return 2 * MaxSIMD * ChunkSize
+		return 8 * MaxSIMD * ChunkSize
 	}
 
 	return MaxSIMD * ChunkSize
@@ -155,10 +158,9 @@ func compressGroups(buf []byte, key *[8]uint32, counter uint64, flags uint32, gr
 	// One CV per MaxSIMD-chunk group; the merge below is defined over
 	// these, so they are computed identically however the work is
 	// spread. Spreading it one group per goroutine was the mistake:
-	// a pure-Go group is 15–19 µs of work (ParallelGrain), a kernel's
-	// ~4.8, and waking a thread for one costs about as much (a 64 KiB
-	// tree spent ~95% of its time in the scheduler). Give each
-	// goroutine a run of groups worth at least
+	// waking a thread costs about what a group is worth (a 64 KiB tree
+	// spent ~95% of its time in the scheduler). Give each goroutine a
+	// run of groups worth at least
 	// ParallelGrain, and run the whole tree on the caller when it does
 	// not split at least two ways. The deal caps a tree at GOMAXPROCS
 	// goroutines (a 1 MiB tree spawned 64 before): what the scheduler
