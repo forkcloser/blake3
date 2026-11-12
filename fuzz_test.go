@@ -31,7 +31,8 @@ func FuzzWriteEquivalence(f *testing.F) {
 		data[i] = byte(x >> 24)
 	}
 
-	key := data[:32]
+	var key [32]byte
+	copy(key[:], data)
 
 	f.Add(uint32(64*kernel.ChunkSize), []byte{})
 	f.Add(uint32(63*kernel.ChunkSize+1), []byte{1, 2})
@@ -43,12 +44,12 @@ func FuzzWriteEquivalence(f *testing.F) {
 		in := data[:n]
 
 		for _, keyed := range []bool{false, true} {
-			var k []byte
+			newHasher := blake3.New
 			if keyed {
-				k = key
+				newHasher = func() *blake3.Hasher { return blake3.NewKeyed(key) }
 			}
 			// reference: chunk-at-a-time, never the eigentree path
-			ref := blake3.New(64, k)
+			ref := newHasher()
 
 			for b := in; len(b) > 0; {
 				m := min(len(b), kernel.ChunkSize)
@@ -63,7 +64,7 @@ func FuzzWriteEquivalence(f *testing.F) {
 			// chunk-multiple, so the engine can steer cuts onto and around
 			// chunk and tree boundaries; a run of zeros degenerates to a
 			// single write, a long pattern to many small ones.
-			h := blake3.New(64, k)
+			h := newHasher()
 
 			rem := in
 			for _, s := range splits {

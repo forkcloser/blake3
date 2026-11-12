@@ -63,10 +63,11 @@ func inputLengths() []int {
 // modes are the three hashing modes, each as the package and the reference
 // build it.
 type mode struct {
-	name string
-	new  func() *blake3.Hasher
-	ref  func() *refimpl.Hasher
-	sum  func(in []byte, n int) []byte // the one-shot form, nil where there is none
+	name  string
+	new   func() *blake3.Hasher
+	ref   func() *refimpl.Hasher
+	sum32 func(in []byte) []byte // the one-shot forms, nil where there is none
+	sum64 func(in []byte) []byte
 }
 
 func modes() []mode {
@@ -79,35 +80,24 @@ func modes() []mode {
 
 	return []mode{
 		{
-			name: "plain",
-			new:  func() *blake3.Hasher { return blake3.New(64, nil) },
-			ref:  refimpl.New,
-			sum: func(in []byte, n int) []byte {
-				if n == 32 {
-					s := blake3.Sum256(in)
-
-					return s[:]
-				}
-
-				s := blake3.Sum512(in)
-
-				return s[:]
-			},
+			name:  "plain",
+			new:   blake3.New,
+			ref:   refimpl.New,
+			sum32: func(in []byte) []byte { s := blake3.Sum256(in); return s[:] },
+			sum64: func(in []byte) []byte { s := blake3.Sum512(in); return s[:] },
 		},
 		{
-			name: "keyed",
-			new:  func() *blake3.Hasher { return blake3.New(64, key[:]) },
-			ref:  func() *refimpl.Hasher { return refimpl.NewKeyed(key) },
+			name:  "keyed",
+			new:   func() *blake3.Hasher { return blake3.NewKeyed(key) },
+			ref:   func() *refimpl.Hasher { return refimpl.NewKeyed(key) },
+			sum32: func(in []byte) []byte { s := blake3.Sum256Keyed(key, in); return s[:] },
 		},
 		{
-			name: "derive",
-			ref:  func() *refimpl.Hasher { return refimpl.NewDeriveKey(ctx) },
-			sum: func(in []byte, n int) []byte {
-				out := make([]byte, n)
-				blake3.DeriveKey(out, ctx, in)
-
-				return out
-			},
+			name:  "derive",
+			new:   func() *blake3.Hasher { return blake3.NewDeriveKey(ctx) },
+			ref:   func() *refimpl.Hasher { return refimpl.NewDeriveKey(ctx) },
+			sum32: func(in []byte) []byte { return blake3.DeriveKey(ctx, in, 32) },
+			sum64: func(in []byte) []byte { return blake3.DeriveKey(ctx, in, 64) },
 		},
 	}
 }
@@ -151,9 +141,8 @@ func write(h *blake3.Hasher, in []byte, cuts []int) {
 	h.Write(in[prev:])
 }
 
-// TestBoundedLengths: every length, every mode, every split: the 64-byte
-// digest, the 32-byte one-shot, and the first 200 bytes of the XOF, each the
-// reference's.
+// TestBoundedLengths: every length, every mode, every split: the digest, the
+// one-shots, and the first 200 bytes of the XOF, each the reference's.
 func TestBoundedLengths(t *testing.T) {
 	t.Parallel()
 
@@ -175,25 +164,23 @@ func TestBoundedLengths(t *testing.T) {
 				want64 := ref.Finalize(0, 64)
 				want200 := ref.Finalize(0, 200)
 
-				if m.sum != nil {
-					if got := m.sum(in, 32); !bytes.Equal(got, want64[:32]) {
+				if m.sum32 != nil {
+					if got := m.sum32(in); !bytes.Equal(got, want64[:32]) {
 						t.Fatalf("len %d: one-shot 32 = %x, want %x", n, got[:8], want64[:8])
-					}
-
-					if got := m.sum(in, 64); !bytes.Equal(got, want64) {
-						t.Fatalf("len %d: one-shot 64 = %x, want %x", n, got[:8], want64[:8])
 					}
 				}
 
-				if m.new == nil {
-					continue
+				if m.sum64 != nil {
+					if got := m.sum64(in); !bytes.Equal(got, want64) {
+						t.Fatalf("len %d: one-shot 64 = %x, want %x", n, got[:8], want64[:8])
+					}
 				}
 
 				for _, cuts := range splits(n) {
 					h := m.new()
 					write(h, in, cuts)
 
-					if got := h.Sum(nil); !bytes.Equal(got, want64) {
+					if got := h.Sum(nil); !bytes.Equal(got, want64[:32]) {
 						t.Fatalf("len %d, cuts %v: Sum = %x, want %x", n, cuts, got[:8], want64[:8])
 					}
 
@@ -246,7 +233,7 @@ func TestBoundedXOFReads(t *testing.T) {
 	ref := refimpl.New()
 	ref.Update(in)
 
-	h := blake3.New(32, nil)
+	h := blake3.New()
 	h.Write(in)
 
 	for _, off := range outputOffsets() {
@@ -288,7 +275,7 @@ func TestBoundedXOFEnd(t *testing.T) {
 	ref := refimpl.New()
 
 	for _, rem := range []int{1, 63, 64, 65, 1023, 1024, 1025, 20000} {
-		xof := blake3.New(0, nil).XOF()
+		xof := blake3.New().XOF()
 		if _, err := xof.Seek(-int64(rem), io.SeekEnd); err != nil {
 			t.Fatal(err)
 		}
@@ -391,5 +378,5 @@ func TestBoundedXOFSeekSequences(t *testing.T) {
 		}
 	}
 
-	walk(blake3.New(0, nil).XOF(), 0, 3, "")
+	walk(blake3.New().XOF(), 0, 3, "")
 }

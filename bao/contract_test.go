@@ -39,7 +39,7 @@ func cData(tb testing.TB, n int) []byte {
 	tb.Helper()
 
 	data := make([]byte, n)
-	if _, err := blake3.New(0, nil).XOF().Read(data); err != nil {
+	if _, err := blake3.New().XOF().Read(data); err != nil {
 		tb.Fatal(err)
 	}
 

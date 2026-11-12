@@ -1,17 +1,17 @@
 // Package blake3 implements the BLAKE3 cryptographic hash function.
 //
-// [New] returns a [Hasher]: a [hash.Hash] with a caller-chosen digest size,
-// an optional 32-byte key, and an extendable output ([Hasher.XOF]). [Sum256]
-// and [Sum512] hash a byte slice in one call, and [DeriveKey] is BLAKE3's
-// key-derivation mode.
+// [New], [NewKeyed] and [NewDeriveKey] return a [Hasher] in each of BLAKE3's
+// three modes: a [hash.Hash] with a 32-byte digest and an extendable output
+// of any length ([Hasher.XOF]). [Sum256], [Sum512], [Sum256Keyed] and
+// [DeriveKey] do the same in one call.
 //
 // A Hasher is not safe for concurrent use; its methods must not be called
 // from more than one goroutine at a time. It holds no pointers, so copying a
 // Hasher value forks its state: the copy and the original continue
-// independently. Write never fails (the error it returns to satisfy
-// [hash.Hash] is always nil), and Sum leaves the state untouched, so Sum may
-// be called repeatedly and interleaved with Write. Digests longer than 64
-// bytes are produced through the XOF.
+// independently; [Hasher.MarshalBinary] and [Hasher.UnmarshalBinary] carry a
+// state across processes and hosts. Write never fails (the error it returns
+// to satisfy [hash.Hash] is always nil), and Sum leaves the state untouched,
+// so Sum may be called repeatedly and interleaved with Write.
 //
 // The subpackages are [github.com/forkcloser/blake3/bao], verified streaming
 // over BLAKE3's tree, and [github.com/forkcloser/blake3/guts], the tree-hashing
@@ -26,10 +26,16 @@ import (
 	"math"
 	"math/bits"
 	"runtime"
-	"slices"
 	"sync"
 
 	"github.com/forkcloser/blake3/internal/kernel"
+)
+
+// The digest's size and the hash's block size, in bytes. Longer output is
+// the XOF's.
+const (
+	Size      = 32
+	BlockSize = kernel.BlockSize
 )
 
 // Hasher implements hash.Hash. See the package documentation for its
@@ -37,7 +43,6 @@ import (
 type Hasher struct {
 	key   [8]uint32
 	flags uint32
-	size  int // output size, for Sum
 
 	// log(n) set of Merkle subtree roots, at most one per height.
 	stack [64][8]uint32
@@ -57,10 +62,53 @@ type Hasher struct {
 	buflen int
 }
 
+// New returns an unkeyed Hasher.
+func New() *Hasher {
+	return &Hasher{key: kernel.IV}
+}
+
+// NewKeyed returns a Hasher in BLAKE3's keyed mode: a MAC under key.
+func NewKeyed(key [32]byte) *Hasher {
+	return &Hasher{key: keyWords(key), flags: kernel.FlagKeyedHash}
+}
+
+// NewDeriveKey returns a Hasher in BLAKE3's key-derivation mode: what is
+// written is the key material, and the digest, or the XOF for longer, is the
+// derived key. context should be hardcoded, globally unique, and
+// application-specific, so that no two applications derive the same key
+// from the same material; a good form is
+//
+//	[application] [commit timestamp] [purpose]
+//
+// such as "example.com 2019-12-25 16:18:03 session tokens v1".
+func NewDeriveKey(context string) *Hasher {
+	h := new(Hasher)
+	h.setDeriveKey(context)
+
+	return h
+}
+
 // Write implements hash.Hash. It always returns len(p), nil.
 func (h *Hasher) Write(p []byte) (int, error) {
 	lenp := len(p)
-	hold := kernel.Width() * kernel.ChunkSize
+	width := kernel.Width()
+
+	// A state restored from a host of another width (UnmarshalBinary) may
+	// stand at a counter that is not a multiple of this one's: chunk by
+	// chunk until it is, and the group logic below takes over.
+	for width > 1 && h.counter%uint64(width) != 0 && len(p) > 0 { // #nosec G115 -- a small positive count
+		n := copy(h.buf[h.buflen:kernel.ChunkSize], p)
+		h.buflen += n
+		p = p[n:]
+
+		if h.buflen == kernel.ChunkSize && len(p) > 0 {
+			h.pushSubtree(kernel.ChainingValue(kernel.CompressChunk(h.buf[:h.buflen], &h.key, h.counter, h.flags)), 0)
+
+			h.buflen = 0
+		}
+	}
+
+	hold := width * kernel.ChunkSize
 
 	// Fill the held buffer first; input that fits in it is held back.
 	if h.buflen > 0 {
@@ -96,26 +144,12 @@ func (h *Hasher) Write(p []byte) (int, error) {
 	return lenp, nil
 }
 
-// Sum implements hash.Hash: it appends the current digest to b and returns
-// the resulting slice, without changing the underlying state. A digest longer
-// than 64 bytes is the first Size() bytes of the XOF stream.
-func (h *Hasher) Sum(b []byte) (sum []byte) {
-	// Append h.Size() bytes to b, reusing b's capacity when it has room.
-	sum = slices.Grow(b, h.Size())[:len(b)+h.Size()]
-	// Read into the appended portion of sum. Use a low-latency-low-throughput
-	// path for small digests (requiring a single compression), and a
-	// high-latency-high-throughput path for large digests.
-	if dst := sum[len(b):]; len(dst) <= kernel.BlockSize {
-		out := kernel.WordsToBytes(kernel.CompressNode(h.rootNode()))
-		copy(dst, out[:])
-	} else {
-		// From offset 0 the read cannot reach the end of the stream, the
-		// one case in which Read returns less than asked, or an error.
-		or := OutputReader{n: h.rootNode()}
-		_, _ = or.Read(dst)
-	}
+// Sum implements hash.Hash: it appends the 32-byte digest of everything
+// written so far to b and returns the result, without changing the state.
+func (h *Hasher) Sum(b []byte) []byte {
+	out := kernel.WordsToBytes(kernel.CompressNode(h.rootNode()))
 
-	return sum
+	return append(b, out[:Size]...)
 }
 
 // Reset implements hash.Hash.
@@ -125,10 +159,10 @@ func (h *Hasher) Reset() {
 }
 
 // BlockSize implements hash.Hash.
-func (*Hasher) BlockSize() int { return kernel.BlockSize }
+func (*Hasher) BlockSize() int { return BlockSize }
 
-// Size implements hash.Hash.
-func (h *Hasher) Size() int { return h.size }
+// Size implements hash.Hash: the digest is 32 bytes.
+func (*Hasher) Size() int { return Size }
 
 // XOF returns an OutputReader initialized with the current hash state. The
 // state is captured at the call: later writes to h do not affect the reader.
@@ -136,6 +170,94 @@ func (h *Hasher) XOF() *OutputReader {
 	return &OutputReader{
 		n: h.rootNode(),
 	}
+}
+
+// AppendBinary implements encoding.BinaryAppender: it appends the state's
+// wire form to b.
+func (h *Hasher) AppendBinary(b []byte) ([]byte, error) {
+	b = append(b, stateTag...)
+	b = binary.LittleEndian.AppendUint32(b, h.flags)
+
+	for _, w := range h.key {
+		b = binary.LittleEndian.AppendUint32(b, w)
+	}
+
+	b = binary.LittleEndian.AppendUint64(b, h.counter)
+
+	for i := range h.stack {
+		if h.hasSubtreeAtHeight(i) {
+			for _, w := range h.stack[i] {
+				b = binary.LittleEndian.AppendUint32(b, w)
+			}
+		}
+	}
+
+	b = binary.LittleEndian.AppendUint16(b, uint16(h.buflen)) // #nosec G115 -- at most a group, 16 KiB
+
+	return append(b, h.buf[:h.buflen]...), nil
+}
+
+// MarshalBinary implements encoding.BinaryMarshaler: the state's wire form,
+// at most 18 KiB and a few dozen bytes for a hash of little. The state
+// carries the key, a keyed Hasher's or the one a derive-mode Hasher made of
+// its context, so it is as secret as the key: not to be stored or sent where
+// the key would not be.
+func (h *Hasher) MarshalBinary() ([]byte, error) {
+	return h.AppendBinary(nil)
+}
+
+// UnmarshalBinary implements encoding.BinaryUnmarshaler: it restores a state
+// MarshalBinary produced, on any host, and continues it. A state that is
+// not one of those is refused and h is left unchanged.
+func (h *Hasher) UnmarshalBinary(data []byte) error {
+	if len(data) < stateFixed+stateLenSize || string(data[:len(stateTag)]) != stateTag {
+		return errInvalidState
+	}
+
+	flags := binary.LittleEndian.Uint32(data[len(stateTag):])
+	if flags != 0 && flags != kernel.FlagKeyedHash && flags != kernel.FlagDeriveKeyMaterial {
+		return errInvalidState
+	}
+
+	r := Hasher{flags: flags}
+	for i := range r.key {
+		r.key[i] = binary.LittleEndian.Uint32(data[len(stateTag)+4+4*i:])
+	}
+
+	counter := binary.LittleEndian.Uint64(data[stateFixed-8:])
+	rest := data[stateFixed:]
+
+	for i := range r.stack {
+		if counter&(1<<i) == 0 {
+			continue
+		}
+
+		if len(rest) < 32+stateLenSize {
+			return errInvalidState
+		}
+
+		for j := range r.stack[i] {
+			r.stack[i][j] = binary.LittleEndian.Uint32(rest[4*j:])
+		}
+
+		rest = rest[32:]
+	}
+
+	held := int(binary.LittleEndian.Uint16(rest))
+	rest = rest[stateLenSize:]
+
+	// Nothing but the bytes announced may follow, a counter past zero holds
+	// at least a byte back (the last chunk of the input is never compressed
+	// before Sum), and a group is the most any host holds.
+	if len(rest) != held || held > len(r.buf) || (counter > 0 && held == 0) {
+		return errInvalidState
+	}
+
+	r.counter = counter
+	r.Write(rest)
+	*h = r
+
+	return nil
 }
 
 func (h *Hasher) hasSubtreeAtHeight(i int) bool {
@@ -211,12 +333,6 @@ func (h *Hasher) compressTrees(flush bool, eigenbuf []byte) {
 	}
 }
 
-// groupHeight is the height of a tree of kernel.MaxSIMD chunks, the held
-// group's; the array below fails to compile when the constant drifts.
-const groupHeight = 4
-
-var _ [0]struct{} = [kernel.MaxSIMD - 1<<groupHeight]struct{}{}
-
 // The held group goes through CompressBuffer, not CompressEigentree: the
 // latter's buffer reaches goroutines of its own for a large tree, and
 // h.buf there would move a stack Hasher (Sum512's, DeriveKey's) to the heap.
@@ -291,6 +407,24 @@ func (h *Hasher) compressTreesParallel(flush bool, eigenbuf []byte, trees []int)
 	}
 }
 
+// setDeriveKey puts h in key-derivation mode for context: the context,
+// hashed in its own mode, is the key the material is hashed under.
+func (h *Hasher) setDeriveKey(context string) {
+	c := Hasher{key: kernel.IV, flags: kernel.FlagDeriveKeyContext}
+	c.Write([]byte(context))
+
+	*h = Hasher{key: kernel.ChainingValue(withRoot(c.rootNode())), flags: kernel.FlagDeriveKeyMaterial}
+}
+
+// groupHeight is the height of a tree of kernel.MaxSIMD chunks, the held
+// group's; the array below fails to compile when the constant drifts.
+const groupHeight = 4
+
+var _ [0]struct{} = [kernel.MaxSIMD - 1<<groupHeight]struct{}{}
+
+// Hasher is a hash.Hash.
+var _ hash.Hash = (*Hasher)(nil)
+
 // dealUnits hands eigenbuf's trees, numbered from idx, to unit: a tree of a
 // group or more on its own, a run of smaller trees together.
 func dealUnits(trees []int, idx int, eigenbuf []byte, counter uint64, unit func(idx int, buf []byte, counter uint64)) {
@@ -322,39 +456,23 @@ func dealUnits(trees []int, idx int, eigenbuf []byte, counter uint64, unit func(
 	}
 }
 
-func newHasher(key [8]uint32, flags uint32, size int) *Hasher {
-	return &Hasher{
-		key:   key,
-		flags: flags,
-		size:  size,
-	}
+// withRoot is n with FlagRoot set, as rootNode returns it.
+func withRoot(n kernel.Node) kernel.Node {
+	n.Flags |= kernel.FlagRoot
+
+	return n
 }
 
-// New returns a Hasher for the specified digest size and key. If key is nil,
-// the hash is unkeyed. Otherwise, len(key) must be 32; New panics if size is
-// negative or if a key of any other length is provided.
-func New(size int, key []byte) *Hasher {
-	if size < 0 {
-		panic("blake3: digest size cannot be negative")
+// keyWords is a key as the words the compression function takes.
+func keyWords(key [32]byte) (words [8]uint32) {
+	for i := range words {
+		words[i] = binary.LittleEndian.Uint32(key[i*4:])
 	}
 
-	if key == nil {
-		return newHasher(kernel.IV, 0, size)
-	}
-
-	if len(key) != 32 {
-		panic("blake3: key must be 32 bytes")
-	}
-
-	var keyWords [8]uint32
-	for i := range keyWords {
-		keyWords[i] = binary.LittleEndian.Uint32(key[i*4:])
-	}
-
-	return newHasher(keyWords, kernel.FlagKeyedHash, size)
+	return words
 }
 
-// Sum256 returns the unkeyed BLAKE3 hash of b, truncated to 256 bits.
+// Sum256 returns the BLAKE3 hash of b.
 func Sum256(b []byte) (out [32]byte) {
 	out512 := Sum512(b)
 	copy(out[:], out512[:])
@@ -362,7 +480,8 @@ func Sum256(b []byte) (out [32]byte) {
 	return out
 }
 
-// Sum512 returns the unkeyed BLAKE3 hash of b, truncated to 512 bits.
+// Sum512 returns the first 64 bytes of the BLAKE3 output of b: the digest,
+// then the next 32 bytes of the XOF.
 func Sum512(b []byte) (out [64]byte) {
 	var n kernel.Node
 
@@ -381,7 +500,7 @@ func Sum512(b []byte) (out [64]byte) {
 		n = kernel.CompressChunk(b, &kernel.IV, 0, 0)
 		n.Flags |= kernel.FlagRoot
 	default:
-		h := Hasher{key: kernel.IV, size: len(out)}
+		h := Hasher{key: kernel.IV}
 		h.Write(b)
 		n = h.rootNode()
 	}
@@ -389,46 +508,51 @@ func Sum512(b []byte) (out [64]byte) {
 	return kernel.WordsToBytes(kernel.CompressNode(n))
 }
 
-// DeriveKey derives a subkey from ctx and srcKey. ctx should be hardcoded,
-// globally unique, and application-specific. A good format for ctx strings is:
-//
-//	[application] [commit timestamp] [purpose]
-//
-// e.g.:
-//
-//	example.com 2019-12-25 16:18:03 session tokens v1
-//
-// The purpose of these requirements is to ensure that an attacker cannot trick
-// two different applications into using the same context string.
-func DeriveKey(subKey []byte, ctx string, srcKey []byte) {
-	// construct the derivation Hasher
-	const derivationIVLen = 32
+// Sum256Keyed returns the keyed BLAKE3 hash of b under key: a MAC.
+func Sum256Keyed(key [32]byte, b []byte) (out [32]byte) {
+	h := Hasher{key: keyWords(key), flags: kernel.FlagKeyedHash}
+	h.Write(b)
+	sum := kernel.WordsToBytes(kernel.CompressNode(h.rootNode()))
+	copy(out[:], sum[:])
 
-	// Both hashers live on the stack: a Hasher is a group buffer and a
-	// stack, too much to allocate twice for one derivation.
-	h := Hasher{key: kernel.IV, flags: kernel.FlagDeriveKeyContext, size: derivationIVLen}
-	h.Write([]byte(ctx))
-
-	var derivationIV [derivationIVLen]byte
-
-	h.Sum(derivationIV[:0])
-
-	var ivWords [8]uint32
-	for i := range ivWords {
-		ivWords[i] = binary.LittleEndian.Uint32(derivationIV[i*4:])
-	}
-
-	h = Hasher{key: ivWords, flags: kernel.FlagDeriveKeyMaterial}
-	// derive the subKey
-	h.Write(srcKey)
-	// From offset 0 the read cannot reach the end of the stream; see Sum.
-	_, _ = h.XOF().Read(subKey)
+	return out
 }
 
-// The errors Seek returns for a position outside the stream.
+// DeriveKey returns n bytes of key derived from material under context, as
+// NewDeriveKey describes; the first 32 are the digest, the rest the XOF's.
+func DeriveKey(context string, material []byte, n int) []byte {
+	var h Hasher
+
+	h.setDeriveKey(context)
+	h.Write(material)
+
+	out := make([]byte, n)
+	// From offset 0 the read cannot reach the end of the stream, the one
+	// case in which Read returns less than asked, or an error.
+	r := OutputReader{n: h.rootNode()}
+	_, _ = r.Read(out)
+
+	return out
+}
+
+// The hash state's wire form (AppendBinary): a tag, the mode's flags and
+// key, the chunk counter, one chaining value per occupied height of the
+// stack from the lowest up, and the bytes held back. Nothing in it names
+// the host's width: UnmarshalBinary feeds the held bytes through Write,
+// which holds back what this host does and realigns the counter when the
+// state came from a narrower one.
+const (
+	stateTag     = "b3h\x01"
+	stateFixed   = len(stateTag) + 4 + 32 + 8 // tag, flags, key, counter
+	stateLenSize = 2                          // the held bytes' count
+)
+
+var errInvalidState = errors.New("blake3: invalid hash state")
+
+// The errors Seek and ReadAt return for a position outside the stream.
 var (
-	errSeekNegative = errors.New("seek position cannot be negative")
-	errSeekPastEnd  = errors.New("seek position cannot exceed end of stream")
+	errSeekNegative = errors.New("blake3: position before the start of the stream")
+	errSeekPastEnd  = errors.New("blake3: position past the end of the stream")
 )
 
 // minParallelReadBytes is the least output one goroutine is handed when a
@@ -440,10 +564,12 @@ const minParallelReadBytes = 16 * 1024
 const outputBufSize = kernel.MaxSIMD * kernel.BlockSize
 
 // An OutputReader produces a seekable stream of 2^64 - 1 pseudorandom output
-// bytes: the BLAKE3 extendable output of the state it was created from.
+// bytes: the BLAKE3 extendable output of the state it was created from. Read
+// and Seek move its position; ReadAt reads anywhere and leaves it alone.
 //
-// Like a Hasher it is not safe for concurrent use, and it holds no pointers,
-// so a copy continues independently from the same position.
+// Like a Hasher it is not safe for concurrent use, except that ReadAt calls
+// may run concurrently with one another, and it holds no pointers, so a copy
+// continues independently from the same position.
 type OutputReader struct {
 	n        kernel.Node
 	buf      [outputBufSize]byte
@@ -541,6 +667,28 @@ func (or *OutputReader) Seek(offset int64, whence int) (int64, error) {
 	return int64(or.off), nil
 }
 
+// ReadAt implements io.ReaderAt: the bytes of the stream from off into p,
+// leaving the reader's position where it was. Several goroutines may call
+// it at once on one reader, as it writes nothing it reads; a Read or Seek
+// at the same time is not safe. The stream's end, at 2^64 - 1, lies past
+// any offset an int64 names, so a ReadAt always fills p and returns
+// len(p), nil; a negative offset is an error.
+func (or *OutputReader) ReadAt(p []byte, off int64) (int, error) {
+	if off < 0 {
+		return 0, errSeekNegative
+	}
+
+	r := *or
+	r.off = uint64(off)
+
+	n, err := r.Read(p)
+	if err == nil && n < len(p) {
+		err = io.EOF
+	}
+
+	return n, err
+}
+
 // readAligned compresses output straight into p, which starts on a block
 // boundary of the stream and holds at least outputBufSize bytes, and returns
 // what is left of p.
@@ -588,6 +736,3 @@ func (or *OutputReader) readAligned(p []byte) []byte {
 
 	return p
 }
-
-// Hasher is a hash.Hash.
-var _ hash.Hash = (*Hasher)(nil)
