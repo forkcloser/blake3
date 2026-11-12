@@ -10,6 +10,9 @@ import (
 // CompressEigentree.
 const simdReadsFullBuffer = false
 
+// kernelsDispatched: there is no kernel off amd64.
+func kernelsDispatched() bool { return false }
+
 // CompressBuffer compresses the first buflen bytes of buf, up to MaxSIMD
 // chunks, and returns their root node.
 func CompressBuffer(buf *[MaxSIMD * ChunkSize]byte, buflen int, key *[8]uint32, counter uint64, flags uint32) Node {

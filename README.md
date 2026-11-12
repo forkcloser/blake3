@@ -165,8 +165,11 @@ duplicated code. Ideally the routines could be merged such that only a single
 routine is generated for AVX-512 and AVX2, without sacrificing too much
 performance.
 
-On amd64, the SIMD kernels always process a full 16-chunk (16 KiB) buffer: a
-shorter eigentree tail is padded and the unused lanes' work discarded.
+On amd64, the SIMD kernels always compute a full group of 16 chunks (16 KiB).
+`Write` hands them whole groups only, holding the input's last group back
+until `Sum`, so the lanes run full while hashing; the held group at `Sum`,
+and bao's chunk groups below 16 chunks, still pay a whole kernel for what
+they hold.
 
 No GitHub-hosted runner is guaranteed `avx512f`: the `ubuntu-24.04` pool
 mixes hosts that have it with hosts that do not, and the development machine

@@ -156,7 +156,7 @@ test-isa isa:
 # use (AVX-512F), keeps that state in the emulator on every host (the book's
 # upstream page). Pin, which SDE is built on, needs ptrace of its own child:
 # the workflow sets kernel.yama.ptrace_scope=0 before this runs.
-[doc('Run the guts tests under Intel SDE emulating an AVX-512 CPU (linux/amd64 only)')]
+[doc('Run the guts and root tests under Intel SDE emulating an AVX-512 CPU (linux/amd64 only)')]
 test-avx512-emulated:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -186,4 +186,10 @@ test-avx512-emulated:
         echo "test-avx512-emulated: the tests passed but TestRequiredISA did not run" >&2
         exit 1
     }
-    echo "test-avx512-emulated: guts tests passed under SDE on the AVX-512 kernels"
+    # The root package on the same emulated CPU, which the run above has
+    # proved dispatches the kernels: Write holds a whole group back there
+    # and deals whole groups out, a path no other lane reaches under AVX-512
+    # unless a verify host happens to have it.
+    go test -c -o build/sde/blake3.test .
+    build/sde/kit/sde64 -spr -force_emulate skx -- build/sde/blake3.test -test.v | tee build/sde/test-root.log
+    echo "test-avx512-emulated: guts and root tests passed under SDE on the AVX-512 kernels"

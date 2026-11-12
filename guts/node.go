@@ -35,18 +35,35 @@ const (
 	ChunkSize = 1024
 
 	MaxSIMD = 16 // AVX-512 vectors can store 16 words
-
-	// minParallelBytes is the least work handed to one goroutine when a
-	// large eigentree is compressed in parallel: one MaxSIMD-chunk group,
-	// which measured best (32 KiB per goroutine was ~10% slower at 64 KiB
-	// and 128 KiB trees). What the run-dealing buys over one goroutine per
-	// group is a cap of GOMAXPROCS goroutines per tree — a 1 MiB tree
-	// spawned 64 before — and a serial path for a tree that does not split.
-	// GOMAXPROCS, not NumCPU: it is what the scheduler will actually run
-	// on, and it follows a container's CPU quota and the caller's setting
-	// where NumCPU reports the machine.
-	minParallelBytes = 16 * 1024
 )
+
+// KernelWidth is the number of chunks CompressBuffer compresses at once on
+// this host: MaxSIMD where a SIMD kernel is dispatched, whose lanes all run
+// whatever the buffer holds, and 1 in pure Go, which goes chunk by chunk. A
+// caller choosing how much input to hold back does best holding a multiple.
+func KernelWidth() int {
+	if kernelsDispatched() {
+		return MaxSIMD
+	}
+
+	return 1
+}
+
+// ParallelGrain is the least input, in bytes, one goroutine is handed when a
+// tree is compressed in parallel: one MaxSIMD-chunk group in pure Go, where
+// that group is 15–19 µs of work (15 on a Xeon 8370C at 1 MiB, 19 on an M5
+// Pro at a 16 KiB write) and measured best (32 KiB per goroutine was ~10%
+// slower at 64 KiB and 128 KiB trees), and two groups where the SIMD
+// kernels are dispatched, whose group is ~4.8 µs on that Xeon, under the
+// cost of waking a thread for it. A caller spreading trees of its own
+// across goroutines should hand each at least this much.
+func ParallelGrain() int {
+	if kernelsDispatched() {
+		return 2 * MaxSIMD * ChunkSize
+	}
+
+	return MaxSIMD * ChunkSize
+}
 
 // IV is the BLAKE3 initialization vector.
 //
@@ -82,7 +99,15 @@ func ParentNode(left, right [8]uint32, key *[8]uint32, flags uint32) Node {
 
 // Eigentrees returns the sequence of eigentree heights that increment counter
 // to counter+chunks.
-func Eigentrees(counter, chunks uint64) (trees []int) {
+func Eigentrees(counter, chunks uint64) []int {
+	return AppendEigentrees(nil, counter, chunks)
+}
+
+// AppendEigentrees appends the sequence of eigentree heights that increment
+// counter to counter+chunks to trees, and returns it: Eigentrees into a
+// caller's array. The sequence climbs while counter is not yet aligned, at
+// most 64 trees, then descends, at most 64 more.
+func AppendEigentrees(trees []int, counter, chunks uint64) []int {
 	for i := counter; i < counter+chunks; {
 		bite := min(bits.TrailingZeros64(i), bits.Len64(counter+chunks-i)-1)
 		trees = append(trees, bite)
@@ -130,13 +155,20 @@ func compressGroups(buf []byte, key *[8]uint32, counter uint64, flags uint32, gr
 	// One CV per MaxSIMD-chunk group; the merge below is defined over
 	// these, so they are computed identically however the work is
 	// spread. Spreading it one group per goroutine was the mistake:
-	// a group is ~10 µs of work, and waking a thread for it costs
-	// more than that (a 64 KiB tree spent ~95% of its time in the
-	// scheduler). Give each goroutine a run of groups worth at least
-	// minParallelBytes, and run the whole tree on the caller when it
-	// does not split at least two ways.
+	// a pure-Go group is 15–19 µs of work (ParallelGrain), a kernel's
+	// ~4.8, and waking a thread for one costs about as much (a 64 KiB
+	// tree spent ~95% of its time in the scheduler). Give each
+	// goroutine a run of groups worth at least
+	// ParallelGrain, and run the whole tree on the caller when it does
+	// not split at least two ways. The deal caps a tree at GOMAXPROCS
+	// goroutines (a 1 MiB tree spawned 64 before): what the scheduler
+	// will actually run on, a container's CPU quota and the caller's
+	// setting included, where NumCPU reports the machine.
 	cvs := make([][8]uint32, groups)
-	compressRun := func(lo, hi uint64) {
+	// The key is a parameter, and each goroutine below gets its own copy
+	// by value: captured, it would leak the caller's, and move a Hasher
+	// on the caller's stack to the heap.
+	compressRun := func(lo, hi uint64, key *[8]uint32) {
 		for i := lo; i < hi; i++ {
 			cvs[i] = ChainingValue(
 				CompressBuffer(
@@ -150,7 +182,7 @@ func compressGroups(buf []byte, key *[8]uint32, counter uint64, flags uint32, gr
 		}
 	}
 
-	const groupsPerGoroutine = minParallelBytes / (MaxSIMD * ChunkSize)
+	groupsPerGoroutine := uint64(ParallelGrain() / (MaxSIMD * ChunkSize)) // #nosec G115 -- a small positive quotient
 	// #nosec G115 -- GOMAXPROCS is a small positive count
 	if par := min(groups/groupsPerGoroutine, uint64(runtime.GOMAXPROCS(0))); par > 1 {
 		// Deal groups out in par near-equal contiguous runs; the
@@ -166,18 +198,18 @@ func compressGroups(buf []byte, key *[8]uint32, counter uint64, flags uint32, gr
 			}
 
 			wg.Add(1)
-			go func(lo, hi uint64) {
+			go func(lo, hi uint64, key [8]uint32) {
 				defer wg.Done()
 
-				compressRun(lo, hi)
-			}(lo, hi)
+				compressRun(lo, hi, &key)
+			}(lo, hi, *key)
 
 			lo = hi
 		}
 
 		wg.Wait()
 	} else {
-		compressRun(0, groups)
+		compressRun(0, groups, key)
 	}
 
 	return mergeGroups(cvs, key, flags)
