@@ -16,9 +16,9 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/forkcloser/blake3"
-	"github.com/forkcloser/blake3/guts"
-	"github.com/forkcloser/blake3/internal/refimpl"
+	"github.com/forkcloser/blake3/v2"
+	"github.com/forkcloser/blake3/v2/internal/kernel"
+	"github.com/forkcloser/blake3/v2/internal/refimpl"
 )
 
 // inputLengths are the lengths walked: each boundary, one step either side.
@@ -34,28 +34,28 @@ func inputLengths() []int {
 	}
 
 	add(0)
-	add(guts.BlockSize)
-	add(2 * guts.BlockSize)
-	add(guts.ChunkSize)
-	add(2 * guts.ChunkSize)
-	add(3 * guts.ChunkSize)
+	add(kernel.BlockSize)
+	add(2 * kernel.BlockSize)
+	add(kernel.ChunkSize)
+	add(2 * kernel.ChunkSize)
+	add(3 * kernel.ChunkSize)
 
 	for c := 4; c <= 128; c *= 2 { // powers of two of chunks: 4 .. 128
-		add(c * guts.ChunkSize)
-		add((c + 1) * guts.ChunkSize)
-		add((c - 1) * guts.ChunkSize)
+		add(c * kernel.ChunkSize)
+		add((c + 1) * kernel.ChunkSize)
+		add((c - 1) * kernel.ChunkSize)
 	}
 
-	add(guts.MaxSIMD * guts.ChunkSize)     // the SIMD group
-	add(24 * 1024)                         // the parallel-write threshold
-	add(32 * 1024)                         // io.Copy's buffer
-	add(100 * guts.ChunkSize)              // not a power of two, a cascade of trees
-	add(2*guts.MaxSIMD*guts.ChunkSize + 1) // two groups and a byte
+	add(kernel.MaxSIMD * kernel.ChunkSize)     // the SIMD group
+	add(24 * 1024)                             // the parallel-write threshold
+	add(32 * 1024)                             // io.Copy's buffer
+	add(100 * kernel.ChunkSize)                // not a power of two, a cascade of trees
+	add(2*kernel.MaxSIMD*kernel.ChunkSize + 1) // two groups and a byte
 	// A tree of 64 groups: more groups than any host here has CPUs, so the
 	// groups are dealt out in runs of several and the run loops are walked,
 	// which a tree of one group per CPU never does.
-	add(1024 * guts.ChunkSize)
-	add(1025 * guts.ChunkSize)
+	add(1024 * kernel.ChunkSize)
+	add(1025 * kernel.ChunkSize)
 
 	return lengths
 }
@@ -63,10 +63,11 @@ func inputLengths() []int {
 // modes are the three hashing modes, each as the package and the reference
 // build it.
 type mode struct {
-	name string
-	new  func() *blake3.Hasher
-	ref  func() *refimpl.Hasher
-	sum  func(in []byte, n int) []byte // the one-shot form, nil where there is none
+	name  string
+	new   func() *blake3.Hasher
+	ref   func() *refimpl.Hasher
+	sum32 func(in []byte) []byte // the one-shot forms, nil where there is none
+	sum64 func(in []byte) []byte
 }
 
 func modes() []mode {
@@ -79,35 +80,24 @@ func modes() []mode {
 
 	return []mode{
 		{
-			name: "plain",
-			new:  func() *blake3.Hasher { return blake3.New(64, nil) },
-			ref:  refimpl.New,
-			sum: func(in []byte, n int) []byte {
-				if n == 32 {
-					s := blake3.Sum256(in)
-
-					return s[:]
-				}
-
-				s := blake3.Sum512(in)
-
-				return s[:]
-			},
+			name:  "plain",
+			new:   blake3.New,
+			ref:   refimpl.New,
+			sum32: func(in []byte) []byte { s := blake3.Sum256(in); return s[:] },
+			sum64: func(in []byte) []byte { s := blake3.Sum512(in); return s[:] },
 		},
 		{
-			name: "keyed",
-			new:  func() *blake3.Hasher { return blake3.New(64, key[:]) },
-			ref:  func() *refimpl.Hasher { return refimpl.NewKeyed(key) },
+			name:  "keyed",
+			new:   func() *blake3.Hasher { return blake3.NewKeyed(key) },
+			ref:   func() *refimpl.Hasher { return refimpl.NewKeyed(key) },
+			sum32: func(in []byte) []byte { s := blake3.Sum256Keyed(key, in); return s[:] },
 		},
 		{
-			name: "derive",
-			ref:  func() *refimpl.Hasher { return refimpl.NewDeriveKey(ctx) },
-			sum: func(in []byte, n int) []byte {
-				out := make([]byte, n)
-				blake3.DeriveKey(out, ctx, in)
-
-				return out
-			},
+			name:  "derive",
+			new:   func() *blake3.Hasher { return blake3.NewDeriveKey(ctx) },
+			ref:   func() *refimpl.Hasher { return refimpl.NewDeriveKey(ctx) },
+			sum32: func(in []byte) []byte { return blake3.DeriveKey(ctx, in, 32) },
+			sum64: func(in []byte) []byte { return blake3.DeriveKey(ctx, in, 64) },
 		},
 	}
 }
@@ -118,14 +108,14 @@ func modes() []mode {
 func splits(n int) [][]int {
 	cuts := [][]int{nil} // one write
 
-	for _, at := range []int{1, guts.BlockSize, guts.ChunkSize - 1, guts.ChunkSize, guts.ChunkSize + 1, 3*guts.ChunkSize + 5, 16 * guts.ChunkSize, n / 2} {
+	for _, at := range []int{1, kernel.BlockSize, kernel.ChunkSize - 1, kernel.ChunkSize, kernel.ChunkSize + 1, 3*kernel.ChunkSize + 5, 16 * kernel.ChunkSize, n / 2} {
 		if at > 0 && at < n {
 			cuts = append(cuts, []int{at})
 		}
 	}
 
-	if n > 2*guts.ChunkSize+2 {
-		cuts = append(cuts, []int{guts.ChunkSize - 1, 2 * guts.ChunkSize, 2*guts.ChunkSize + 2})
+	if n > 2*kernel.ChunkSize+2 {
+		cuts = append(cuts, []int{kernel.ChunkSize - 1, 2 * kernel.ChunkSize, 2*kernel.ChunkSize + 2})
 	}
 
 	if n > 300 {
@@ -151,13 +141,12 @@ func write(h *blake3.Hasher, in []byte, cuts []int) {
 	h.Write(in[prev:])
 }
 
-// TestBoundedLengths: every length, every mode, every split: the 64-byte
-// digest, the 32-byte one-shot, and the first 200 bytes of the XOF, each the
-// reference's.
+// TestBoundedLengths: every length, every mode, every split: the digest, the
+// one-shots, and the first 200 bytes of the XOF, each the reference's.
 func TestBoundedLengths(t *testing.T) {
 	t.Parallel()
 
-	data := make([]byte, 1026*guts.ChunkSize)
+	data := make([]byte, 1026*kernel.ChunkSize)
 	if _, err := rand.NewChaCha8([32]byte{2}).Read(data); err != nil {
 		t.Fatal(err)
 	}
@@ -175,25 +164,23 @@ func TestBoundedLengths(t *testing.T) {
 				want64 := ref.Finalize(0, 64)
 				want200 := ref.Finalize(0, 200)
 
-				if m.sum != nil {
-					if got := m.sum(in, 32); !bytes.Equal(got, want64[:32]) {
+				if m.sum32 != nil {
+					if got := m.sum32(in); !bytes.Equal(got, want64[:32]) {
 						t.Fatalf("len %d: one-shot 32 = %x, want %x", n, got[:8], want64[:8])
-					}
-
-					if got := m.sum(in, 64); !bytes.Equal(got, want64) {
-						t.Fatalf("len %d: one-shot 64 = %x, want %x", n, got[:8], want64[:8])
 					}
 				}
 
-				if m.new == nil {
-					continue
+				if m.sum64 != nil {
+					if got := m.sum64(in); !bytes.Equal(got, want64) {
+						t.Fatalf("len %d: one-shot 64 = %x, want %x", n, got[:8], want64[:8])
+					}
 				}
 
 				for _, cuts := range splits(n) {
 					h := m.new()
 					write(h, in, cuts)
 
-					if got := h.Sum(nil); !bytes.Equal(got, want64) {
+					if got := h.Sum(nil); !bytes.Equal(got, want64[:32]) {
 						t.Fatalf("len %d, cuts %v: Sum = %x, want %x", n, cuts, got[:8], want64[:8])
 					}
 
@@ -212,7 +199,7 @@ func TestBoundedLengths(t *testing.T) {
 func outputOffsets() []uint64 {
 	var offsets []uint64
 
-	for _, b := range []uint64{0, guts.BlockSize, 2 * guts.BlockSize, 1024, 2048, 16 * 1024, 32 * 1024, 64 * 1024} {
+	for _, b := range []uint64{0, kernel.BlockSize, 2 * kernel.BlockSize, 1024, 2048, 16 * 1024, 32 * 1024, 64 * 1024} {
 		for _, d := range []int64{-1, 0, 1} {
 			if int64(b)+d >= 0 {
 				offsets = append(offsets, uint64(int64(b)+d))
@@ -222,9 +209,9 @@ func outputOffsets() []uint64 {
 
 	offsets = append(
 		offsets,
-		1<<32*guts.BlockSize-1,
-		1<<32*guts.BlockSize,
-		1<<32*guts.BlockSize+1,
+		1<<32*kernel.BlockSize-1,
+		1<<32*kernel.BlockSize,
+		1<<32*kernel.BlockSize+1,
 	) // a block counter past 32 bits
 
 	return offsets
@@ -242,11 +229,11 @@ func readSizes() []int {
 func TestBoundedXOFReads(t *testing.T) {
 	t.Parallel()
 
-	in := cInput(guts.ChunkSize + 1)
+	in := cInput(kernel.ChunkSize + 1)
 	ref := refimpl.New()
 	ref.Update(in)
 
-	h := blake3.New(32, nil)
+	h := blake3.New()
 	h.Write(in)
 
 	for _, off := range outputOffsets() {
@@ -288,7 +275,7 @@ func TestBoundedXOFEnd(t *testing.T) {
 	ref := refimpl.New()
 
 	for _, rem := range []int{1, 63, 64, 65, 1023, 1024, 1025, 20000} {
-		xof := blake3.New(0, nil).XOF()
+		xof := blake3.New().XOF()
 		if _, err := xof.Seek(-int64(rem), io.SeekEnd); err != nil {
 			t.Fatal(err)
 		}
@@ -391,5 +378,5 @@ func TestBoundedXOFSeekSequences(t *testing.T) {
 		}
 	}
 
-	walk(blake3.New(0, nil).XOF(), 0, 3, "")
+	walk(blake3.New().XOF(), 0, 3, "")
 }

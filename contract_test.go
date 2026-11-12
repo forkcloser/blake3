@@ -11,31 +11,36 @@ package blake3_test
 //     package doc says so); Sum appends the digest to its argument and does
 //     not change the state; Reset returns to the initial state; Size and
 //     BlockSize are the digest size asked for and 64.
-//   - The package doc: a Hasher holds no pointers, so a copy forks its state;
-//     New panics on a negative size or a key not 32 bytes long; a digest
-//     longer than 64 bytes is the first Size bytes of the XOF.
+//   - The package doc: a Hasher holds no pointers, so a copy forks its state,
+//     and MarshalBinary and UnmarshalBinary carry one across processes and
+//     hosts; the digest is 32 bytes, longer output is the XOF's.
 //   - Hasher.XOF: the state captured at the call; later writes do not reach
 //     the reader. OutputReader.Read returns len(p), nil except across the
 //     end of the 2^64-1 byte stream, where it returns what remains and then
 //     0, io.EOF. Seek: before the start or past the end is an error that
 //     leaves the position alone; io.SeekEnd with 0 is the end, with -n the
 //     last n bytes; an unknown whence panics.
-//   - DeriveKey: the specification's derive_key mode, any output length.
+//   - NewDeriveKey and DeriveKey: the specification's derive_key mode, any
+//     output length. OutputReader.ReadAt: the stream at any offset, the
+//     position untouched, concurrent calls allowed.
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"math"
+	"math/bits"
 	"os"
 	"runtime"
+	"sync"
 	"testing"
 
-	"github.com/forkcloser/blake3"
-	"github.com/forkcloser/blake3/guts"
-	"github.com/forkcloser/blake3/internal/refimpl"
+	"github.com/forkcloser/blake3/v2"
+	"github.com/forkcloser/blake3/v2/internal/kernel"
+	"github.com/forkcloser/blake3/v2/internal/refimpl"
 )
 
 // cVectors is testdata/vectors.json, the reference implementation's test
@@ -105,10 +110,9 @@ func TestContractVectors(t *testing.T) {
 	t.Parallel()
 
 	vecs := cLoadVectors(t)
-	key := []byte(vecs.Key)
 
 	var key32 [32]byte
-	copy(key32[:], key)
+	copy(key32[:], vecs.Key)
 
 	for _, vec := range vecs.Cases {
 		in := cInput(vec.InputLen)
@@ -136,12 +140,13 @@ func TestContractVectors(t *testing.T) {
 			t.Fatalf("len %d: the reference port's derived key disagrees with the cVectors", vec.InputLen)
 		}
 
-		// the package: a 131-byte digest goes through the XOF path of Sum
-		h := blake3.New(len(wantHash), nil)
+		// the package: the 32-byte digest, the one-shots, the 131 bytes
+		// through the XOF
+		h := blake3.New()
 		h.Write(in)
 
-		if got := h.Sum(nil); !bytes.Equal(got, wantHash) {
-			t.Errorf("len %d: Sum(%d) = %x, want %x", vec.InputLen, len(wantHash), got[:8], wantHash[:8])
+		if got := h.Sum(nil); !bytes.Equal(got, wantHash[:32]) {
+			t.Errorf("len %d: Sum = %x, want %x", vec.InputLen, got[:8], wantHash[:8])
 		}
 
 		if got := blake3.Sum256(in); !bytes.Equal(got[:], wantHash[:32]) {
@@ -157,18 +162,34 @@ func TestContractVectors(t *testing.T) {
 			t.Errorf("len %d: XOF = %x, %v, want %x", vec.InputLen, xof[:8], err, wantHash[:8])
 		}
 
-		h = blake3.New(len(wantKeyed), key)
+		h = blake3.NewKeyed(key32)
 		h.Write(in)
 
-		if got := h.Sum(nil); !bytes.Equal(got, wantKeyed) {
+		if got := h.Sum(nil); !bytes.Equal(got, wantKeyed[:32]) {
 			t.Errorf("len %d: keyed Sum = %x, want %x", vec.InputLen, got[:8], wantKeyed[:8])
 		}
 
-		derived := make([]byte, len(wantDerived))
-		blake3.DeriveKey(derived, vectorsContext, in)
+		if _, err := io.ReadFull(h.XOF(), xof); err != nil || !bytes.Equal(xof, wantKeyed) {
+			t.Errorf("len %d: keyed XOF = %x, %v, want %x", vec.InputLen, xof[:8], err, wantKeyed[:8])
+		}
 
-		if !bytes.Equal(derived, wantDerived) {
-			t.Errorf("len %d: DeriveKey = %x, want %x", vec.InputLen, derived[:8], wantDerived[:8])
+		if got := blake3.Sum256Keyed(key32, in); !bytes.Equal(got[:], wantKeyed[:32]) {
+			t.Errorf("len %d: Sum256Keyed = %x, want %x", vec.InputLen, got[:8], wantKeyed[:8])
+		}
+
+		if got := blake3.DeriveKey(vectorsContext, in, len(wantDerived)); !bytes.Equal(got, wantDerived) {
+			t.Errorf("len %d: DeriveKey = %x, want %x", vec.InputLen, got[:8], wantDerived[:8])
+		}
+
+		h = blake3.NewDeriveKey(vectorsContext)
+		h.Write(in)
+
+		if got := h.Sum(nil); !bytes.Equal(got, wantDerived[:32]) {
+			t.Errorf("len %d: NewDeriveKey Sum = %x, want %x", vec.InputLen, got[:8], wantDerived[:8])
+		}
+
+		if _, err := io.ReadFull(h.XOF(), xof); err != nil || !bytes.Equal(xof, wantDerived) {
+			t.Errorf("len %d: NewDeriveKey XOF = %x, %v, want %x", vec.InputLen, xof[:8], err, wantDerived[:8])
 		}
 	}
 }
@@ -180,17 +201,17 @@ func TestContractVectors(t *testing.T) {
 func TestContractHashHash(t *testing.T) {
 	t.Parallel()
 
-	in := cInput(3*guts.ChunkSize + 7)
+	in := cInput(3*kernel.ChunkSize + 7)
 	want := refimpl.Hash(in, 32)
-	wantHalf := refimpl.Hash(in[:guts.ChunkSize+1], 32)
+	wantHalf := refimpl.Hash(in[:kernel.ChunkSize+1], 32)
 
-	h := blake3.New(32, nil)
-	if h.Size() != 32 || h.BlockSize() != guts.BlockSize {
+	h := blake3.New()
+	if h.Size() != blake3.Size || blake3.Size != 32 || h.BlockSize() != blake3.BlockSize || blake3.BlockSize != 64 {
 		t.Fatalf("Size %d, BlockSize %d", h.Size(), h.BlockSize())
 	}
 
-	n, err := h.Write(in[:guts.ChunkSize+1])
-	if n != guts.ChunkSize+1 || err != nil {
+	n, err := h.Write(in[:kernel.ChunkSize+1])
+	if n != kernel.ChunkSize+1 || err != nil {
 		t.Fatalf("Write = %d, %v", n, err)
 	}
 
@@ -207,8 +228,8 @@ func TestContractHashHash(t *testing.T) {
 	}
 
 	// the write after the Sums continues the same stream
-	n, err = h.Write(in[guts.ChunkSize+1:])
-	if n != len(in)-guts.ChunkSize-1 || err != nil {
+	n, err = h.Write(in[kernel.ChunkSize+1:])
+	if n != len(in)-kernel.ChunkSize-1 || err != nil {
 		t.Fatalf("Write = %d, %v", n, err)
 	}
 
@@ -241,11 +262,6 @@ func TestContractHashHash(t *testing.T) {
 	if got := h.Sum(nil); !bytes.Equal(got, want) {
 		t.Fatalf("Sum after an empty Write = %x, want %x", got, want)
 	}
-
-	// Size 0: Sum appends nothing
-	if got := blake3.New(0, nil).Sum([]byte("x")); string(got) != "x" {
-		t.Fatalf("Sum of a size-0 Hasher = %q", got)
-	}
 }
 
 // TestContractCopyForks: a Hasher and an OutputReader hold no pointers, so a
@@ -253,26 +269,26 @@ func TestContractHashHash(t *testing.T) {
 func TestContractCopyForks(t *testing.T) {
 	t.Parallel()
 
-	in := cInput(5*guts.ChunkSize + 100)
+	in := cInput(5*kernel.ChunkSize + 100)
 
-	h := blake3.New(32, nil)
-	h.Write(in[:2*guts.ChunkSize+3])
+	h := blake3.New()
+	h.Write(in[:2*kernel.ChunkSize+3])
 
 	fork := *h
 
-	h.Write(in[2*guts.ChunkSize+3:])
+	h.Write(in[2*kernel.ChunkSize+3:])
 	fork.Write([]byte("other"))
 
 	if got := h.Sum(nil); !bytes.Equal(got, refimpl.Hash(in, 32)) {
 		t.Fatalf("original after the fork wrote: %x", got)
 	}
 
-	other := append(bytes.Clone(in[:2*guts.ChunkSize+3]), "other"...)
+	other := append(bytes.Clone(in[:2*kernel.ChunkSize+3]), "other"...)
 	if got := fork.Sum(nil); !bytes.Equal(got, refimpl.Hash(other, 32)) {
 		t.Fatalf("fork after the original wrote: %x", got)
 	}
 
-	xof := blake3.New(0, nil).XOF()
+	xof := blake3.New().XOF()
 	buf := make([]byte, 100)
 
 	if _, err := io.ReadFull(xof, buf); err != nil {
@@ -299,52 +315,24 @@ func TestContractCopyForks(t *testing.T) {
 	}
 }
 
-// TestContractNewPanics: New refuses what the doc says it refuses, and takes
-// the rest: nil key, 32-byte key, size 0.
-func TestContractNewPanics(t *testing.T) {
-	t.Parallel()
-
-	panics := func(f func()) (panicked bool) {
-		defer func() { panicked = recover() != nil }()
-
-		f()
-
-		return false
-	}
-
-	if !panics(func() { blake3.New(-1, nil) }) {
-		t.Error("New(-1, nil) did not panic")
-	}
-
-	for _, n := range []int{0, 1, 16, 31, 33, 64} {
-		if !panics(func() { blake3.New(32, make([]byte, n)) }) {
-			t.Errorf("New with a %d-byte key did not panic", n)
-		}
-	}
-
-	if panics(func() { blake3.New(0, nil) }) || panics(func() { blake3.New(32, make([]byte, 32)) }) {
-		t.Error("New refused a valid argument")
-	}
-}
-
 // TestContractXOFCaptured: the XOF is the state at the call.
 func TestContractXOFCaptured(t *testing.T) {
 	t.Parallel()
 
-	in := cInput(2*guts.ChunkSize + 1)
+	in := cInput(2*kernel.ChunkSize + 1)
 
-	h := blake3.New(32, nil)
-	h.Write(in[:guts.ChunkSize])
+	h := blake3.New()
+	h.Write(in[:kernel.ChunkSize])
 
 	xof := h.XOF()
-	h.Write(in[guts.ChunkSize:])
+	h.Write(in[kernel.ChunkSize:])
 
 	got := make([]byte, 64)
 	if _, err := io.ReadFull(xof, got); err != nil {
 		t.Fatal(err)
 	}
 
-	if !bytes.Equal(got, refimpl.Hash(in[:guts.ChunkSize], 64)) {
+	if !bytes.Equal(got, refimpl.Hash(in[:kernel.ChunkSize], 64)) {
 		t.Fatal("the XOF saw a write made after it was taken")
 	}
 }
@@ -354,7 +342,7 @@ func TestContractXOFCaptured(t *testing.T) {
 func TestContractXOFEnd(t *testing.T) {
 	t.Parallel()
 
-	xof := blake3.New(0, nil).XOF()
+	xof := blake3.New().XOF()
 
 	const rem = 1000
 
@@ -387,7 +375,7 @@ func TestContractXOFEnd(t *testing.T) {
 func TestContractXOFSeek(t *testing.T) {
 	t.Parallel()
 
-	xof := blake3.New(0, nil).XOF()
+	xof := blake3.New().XOF()
 	ref := refimpl.New()
 
 	// position 0 after construction
@@ -491,27 +479,27 @@ func TestContractDeriveKey(t *testing.T) {
 	ref.Update(material)
 
 	for _, n := range []int{0, 1, 31, 32, 33, 64, 65, 1000, 1025} {
-		got := make([]byte, n)
-		blake3.DeriveKey(got, ctx, material)
-
-		if !bytes.Equal(got, ref.Finalize(0, n)) {
+		if got := blake3.DeriveKey(ctx, material, n); len(got) != n || !bytes.Equal(got, ref.Finalize(0, n)) {
 			t.Fatalf("DeriveKey of %d bytes is not the reference's", n)
+		}
+
+		h := blake3.NewDeriveKey(ctx)
+		h.Write(material[:700])
+		h.Write(material[700:])
+
+		got := make([]byte, n)
+		if _, err := io.ReadFull(h.XOF(), got); err != nil || !bytes.Equal(got, ref.Finalize(0, n)) {
+			t.Fatalf("NewDeriveKey's %d bytes are not the reference's: %v", n, err)
 		}
 	}
 
-	other := make([]byte, 32)
-	blake3.DeriveKey(other, ctx+" other", material)
+	same := blake3.DeriveKey(ctx, material, 32)
 
-	same := make([]byte, 32)
-	blake3.DeriveKey(same, ctx, material)
-
-	if bytes.Equal(other, same) {
+	if other := blake3.DeriveKey(ctx+" other", material, 32); bytes.Equal(other, same) {
 		t.Error("two contexts gave the same key")
 	}
 
-	blake3.DeriveKey(other, ctx, append(bytes.Clone(material), 1))
-
-	if bytes.Equal(other, same) {
+	if other := blake3.DeriveKey(ctx, append(bytes.Clone(material), 1), 32); bytes.Equal(other, same) {
 		t.Error("two materials gave the same key")
 	}
 }
@@ -526,18 +514,18 @@ func TestContractEigentreePrecondition(t *testing.T) {
 	panics := func(n int) (panicked bool) {
 		defer func() { panicked = recover() != nil }()
 
-		guts.CompressEigentree(make([]byte, n), &guts.IV, 0, 0)
+		kernel.CompressEigentree(make([]byte, n), &kernel.IV, 0, 0)
 
 		return false
 	}
 
-	for _, n := range []int{0, 1, 1500, 3 * guts.ChunkSize, 2*guts.ChunkSize + 1} {
+	for _, n := range []int{0, 1, 1500, 3 * kernel.ChunkSize, 2*kernel.ChunkSize + 1} {
 		if !panics(n) {
 			t.Errorf("CompressEigentree accepted %d bytes", n)
 		}
 	}
 
-	for _, n := range []int{guts.ChunkSize, 2 * guts.ChunkSize, 16 * guts.ChunkSize, 32 * guts.ChunkSize} {
+	for _, n := range []int{kernel.ChunkSize, 2 * kernel.ChunkSize, 16 * kernel.ChunkSize, 32 * kernel.ChunkSize} {
 		if panics(n) {
 			t.Errorf("CompressEigentree refused %d bytes", n)
 		}
@@ -567,7 +555,7 @@ func TestContractGOMAXPROCS(t *testing.T) { //nolint:paralleltest // sets GOMAXP
 	for _, procs := range []int{1, 3} {
 		runtime.GOMAXPROCS(procs)
 
-		h := blake3.New(32, nil)
+		h := blake3.New()
 		if _, err := h.Write(in); err != nil {
 			t.Fatalf("GOMAXPROCS=%d: Write: %v", procs, err)
 		}
@@ -585,4 +573,296 @@ func TestContractGOMAXPROCS(t *testing.T) { //nolint:paralleltest // sets GOMAXP
 			t.Errorf("GOMAXPROCS=%d: XOF output differs from the reference", procs)
 		}
 	}
+}
+
+// TestContractMarshal: the state round-trips through MarshalBinary and
+// UnmarshalBinary in every mode and at every kind of length, the restored
+// Hasher continuing the stream; AppendBinary appends; a state that is not
+// one MarshalBinary produced is refused and leaves the Hasher alone.
+func TestContractMarshal(t *testing.T) {
+	t.Parallel()
+
+	in := cInput(40*kernel.ChunkSize + 300)
+
+	var key [32]byte
+	copy(key[:], "the thirty-two bytes of this key")
+
+	const ctx = "forkcloser blake3 2026-11-12 marshal"
+
+	for _, m := range []struct {
+		name string
+		new  func() *blake3.Hasher
+		ref  func() *refimpl.Hasher
+	}{
+		{"plain", blake3.New, refimpl.New},
+		{"keyed", func() *blake3.Hasher { return blake3.NewKeyed(key) }, func() *refimpl.Hasher { return refimpl.NewKeyed(key) }},
+		{"derive", func() *blake3.Hasher { return blake3.NewDeriveKey(ctx) }, func() *refimpl.Hasher { return refimpl.NewDeriveKey(ctx) }},
+	} {
+		for _, at := range []int{0, 1, kernel.ChunkSize, kernel.ChunkSize + 1, 5*kernel.ChunkSize + 7, 16 * kernel.ChunkSize, 16*kernel.ChunkSize + 1, 33 * kernel.ChunkSize, len(in)} {
+			ref := m.ref()
+			ref.Update(in)
+			want := ref.Finalize(0, 32)
+
+			h := m.new()
+			h.Write(in[:at])
+
+			state, err := h.MarshalBinary()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			withPrefix, err := h.AppendBinary([]byte("prefix"))
+			if err != nil || !bytes.Equal(withPrefix, append([]byte("prefix"), state...)) {
+				t.Fatalf("%s at %d: AppendBinary did not append the state: %v", m.name, at, err)
+			}
+
+			var restored blake3.Hasher
+			if err := restored.UnmarshalBinary(state); err != nil {
+				t.Fatalf("%s at %d: UnmarshalBinary: %v", m.name, at, err)
+			}
+
+			if got := restored.Sum(nil); !bytes.Equal(got, h.Sum(nil)) {
+				t.Fatalf("%s at %d: the restored digest differs", m.name, at)
+			}
+
+			h.Write(in[at:])
+			restored.Write(in[at:])
+
+			if got := restored.Sum(nil); !bytes.Equal(got, want) || !bytes.Equal(h.Sum(nil), want) {
+				t.Fatalf("%s at %d: continued after restore = %x, want %x", m.name, at, got[:8], want[:8])
+			}
+		}
+	}
+
+	// Refusals: each leaves the Hasher as it was.
+	h := blake3.New()
+	h.Write(in[:3000])
+
+	before := h.Sum(nil)
+
+	state, err := h.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The empty state is the fixed fields and a zero count, on any host.
+	fresh, err := blake3.New().MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, bad := range map[string][]byte{
+		"empty":           {},
+		"short":           state[:20],
+		"tag":             append([]byte("x"), state[1:]...),
+		"flags":           append(append(bytes.Clone(state[:4]), 4, 0, 0, 0), state[8:]...), // FlagParent: no mode
+		"trailing byte":   append(bytes.Clone(state), 0),
+		"truncated held":  state[:len(state)-1],
+		"held past group": append(append(bytes.Clone(fresh[:len(fresh)-2]), 0xff, 0xff), make([]byte, 65535)...),
+	} {
+		if h.UnmarshalBinary(bad) == nil {
+			t.Errorf("UnmarshalBinary accepted a %s state", name)
+		}
+
+		if got := h.Sum(nil); !bytes.Equal(got, before) {
+			t.Fatalf("a refused %s state changed the Hasher", name)
+		}
+	}
+
+	// A counter past zero with nothing held is no input's state: the state
+	// after more than a group, so that the counter is past zero on a host
+	// of any width (a wide one holds 3000 bytes whole, at counter zero),
+	// with its held bytes cut and their count zeroed, every other field as
+	// written.
+	past := blake3.New()
+	past.Write(in[:20*kernel.ChunkSize+300])
+
+	pastSum := past.Sum(nil)
+
+	pastState, err := past.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	counter := binary.LittleEndian.Uint64(pastState[4+4+32:])
+	if counter == 0 {
+		t.Fatal("premise: a write past a group left the counter at zero")
+	}
+
+	stackEnd := 4 + 4 + 32 + 8 + 32*bits.OnesCount64(counter)
+	cut := append(bytes.Clone(pastState[:stackEnd]), 0, 0)
+
+	if past.UnmarshalBinary(cut) == nil {
+		t.Error("UnmarshalBinary accepted a counter past zero with nothing held")
+	}
+
+	if got := past.Sum(nil); !bytes.Equal(got, pastSum) {
+		t.Fatal("a refused state with nothing held changed the Hasher")
+	}
+
+	// A counter whose stack entries are missing.
+	empty := blake3.New()
+
+	state, err = empty.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	state[4+4+32] = 16 // counter 16, one stack entry announced, none present, none held
+
+	if err := empty.UnmarshalBinary(state); err == nil {
+		t.Error("UnmarshalBinary accepted a counter with no stack entry")
+	}
+}
+
+// TestContractMarshalAcrossHosts: a state marshaled on a host of one kernel
+// width restores on a host of another. The wire form carries no width: a
+// narrow host's state stands at any chunk counter and holds under a chunk,
+// a wide host's at a multiple of sixteen and holds up to a group. Both are
+// built here from the primitives, as the other host would have written
+// them, and restored on this one, whichever it is.
+func TestContractMarshalAcrossHosts(t *testing.T) {
+	t.Parallel()
+
+	in := cInput(40*kernel.ChunkSize + 11)
+
+	state := func(counter uint64, cvs [][8]uint32, held []byte) []byte {
+		b := []byte("b3h\x01")
+		b = append(b, 0, 0, 0, 0) // unkeyed
+
+		for _, w := range kernel.IV {
+			b = binary.LittleEndian.AppendUint32(b, w)
+		}
+
+		b = binary.LittleEndian.AppendUint64(b, counter)
+
+		for _, cv := range cvs {
+			for _, w := range cv {
+				b = binary.LittleEndian.AppendUint32(b, w)
+			}
+		}
+
+		b = binary.LittleEndian.AppendUint16(b, uint16(len(held)))
+
+		return append(b, held...)
+	}
+
+	cv := func(buf []byte, counter uint64) [8]uint32 {
+		return kernel.ChainingValue(kernel.CompressEigentree(buf, &kernel.IV, counter, 0))
+	}
+
+	for _, tc := range []struct {
+		name  string
+		state []byte
+		done  int // bytes of in the state stands for
+	}{
+		{
+			// A narrow host after 5 chunks and 700 bytes: heights 0 and 2
+			// occupied, the lower written first.
+			name: "narrow, counter 5",
+			state: state(5, [][8]uint32{
+				cv(in[4*kernel.ChunkSize:5*kernel.ChunkSize], 4),
+				cv(in[:4*kernel.ChunkSize], 0),
+			}, in[5*kernel.ChunkSize:5*kernel.ChunkSize+700]),
+			done: 5*kernel.ChunkSize + 700,
+		},
+		{
+			// A narrow host after 17 chunks: heights 0 and 4.
+			name: "narrow, counter 17",
+			state: state(17, [][8]uint32{
+				cv(in[16*kernel.ChunkSize:17*kernel.ChunkSize], 16),
+				cv(in[:16*kernel.ChunkSize], 0),
+			}, in[17*kernel.ChunkSize:17*kernel.ChunkSize+1]),
+			done: 17*kernel.ChunkSize + 1,
+		},
+		{
+			// A wide host after a group and 5000 bytes: height 4, five
+			// chunks held, more than a narrow host ever holds.
+			name:  "wide, counter 16",
+			state: state(16, [][8]uint32{cv(in[:16*kernel.ChunkSize], 0)}, in[16*kernel.ChunkSize:16*kernel.ChunkSize+5000]),
+			done:  16*kernel.ChunkSize + 5000,
+		},
+		{
+			// A wide host holding a whole group at counter 0.
+			name:  "wide, a full group held",
+			state: state(0, nil, in[:16*kernel.ChunkSize]),
+			done:  16 * kernel.ChunkSize,
+		},
+	} {
+		var h blake3.Hasher
+		if err := h.UnmarshalBinary(tc.state); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+
+		if got := h.Sum(nil); !bytes.Equal(got, refimpl.Hash(in[:tc.done], 32)) {
+			t.Fatalf("%s: digest of the restored state is not the reference's", tc.name)
+		}
+
+		// Continue in two writes, one small, so the realignment a wide host
+		// does chunk by chunk runs across them.
+		h.Write(in[tc.done : tc.done+300])
+		h.Write(in[tc.done+300:])
+
+		if got := h.Sum(nil); !bytes.Equal(got, refimpl.Hash(in, 32)) {
+			t.Fatalf("%s: continued digest is not the reference's", tc.name)
+		}
+	}
+}
+
+// TestContractReadAt: the stream at any offset, the position untouched, and
+// concurrent calls on one reader agree with the reference.
+func TestContractReadAt(t *testing.T) {
+	t.Parallel()
+
+	in := cInput(2*kernel.ChunkSize + 9)
+	ref := refimpl.New()
+	ref.Update(in)
+
+	h := blake3.New()
+	h.Write(in)
+	xof := h.XOF()
+
+	if _, err := xof.Seek(77, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, off := range []int64{0, 1, 63, 64, 65, 1000, 1024, 1 << 20, 1<<32*kernel.BlockSize - 1, math.MaxInt64 - 100} {
+		for _, n := range []int{1, 64, 100, 1025} {
+			got := make([]byte, n)
+
+			m, err := xof.ReadAt(got, off)
+			if m != n || err != nil {
+				t.Fatalf("ReadAt(%d, %d) = %d, %v", n, off, m, err)
+			}
+
+			if !bytes.Equal(got, ref.Finalize(uint64(off), n)) {
+				t.Fatalf("ReadAt(%d, %d) is not the stream", n, off)
+			}
+		}
+	}
+
+	if pos, err := xof.Seek(0, io.SeekCurrent); err != nil || pos != 77 {
+		t.Fatalf("ReadAt moved the position to %d, %v", pos, err)
+	}
+
+	// A negative offset is refused outright: not read as 2^64 - 1000, which
+	// would be a short read at the end of the stream and io.EOF.
+	if n, err := xof.ReadAt(make([]byte, 1), -1000); n != 0 || err == nil || errors.Is(err, io.EOF) {
+		t.Errorf("ReadAt at -1000 = %d, %v; want 0 and an error that is not io.EOF", n, err)
+	}
+
+	var wg sync.WaitGroup
+
+	for i := range 8 {
+		wg.Go(func() {
+			got := make([]byte, 3000)
+
+			off := int64(i * 1000)
+			if _, err := xof.ReadAt(got, off); err != nil || !bytes.Equal(got, ref.Finalize(uint64(off), 3000)) {
+				t.Errorf("concurrent ReadAt at %d is not the stream: %v", off, err)
+			}
+		})
+	}
+
+	wg.Wait()
 }

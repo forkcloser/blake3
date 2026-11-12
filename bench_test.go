@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/forkcloser/blake3"
+	"github.com/forkcloser/blake3/v2"
 )
 
 // The guards: the package exists for speed on large inputs and outputs, and
@@ -23,7 +23,7 @@ func BenchmarkWrite(b *testing.B) {
 	b.ReportAllocs()
 	b.SetBytes(1024)
 
-	if _, err := io.CopyN(blake3.New(0, nil), nopReader{}, int64(b.N*1024)); err != nil {
+	if _, err := io.CopyN(blake3.New(), nopReader{}, int64(b.N*1024)); err != nil {
 		b.Fatal(err)
 	}
 }
@@ -38,7 +38,7 @@ func BenchmarkWriteSizes(b *testing.B) {
 			b.SetBytes(int64(size))
 			buf := make([]byte, size)
 
-			h := blake3.New(32, nil)
+			h := blake3.New()
 			for range b.N {
 				h.Write(buf)
 			}
@@ -53,7 +53,7 @@ func BenchmarkXOF(b *testing.B) {
 			b.SetBytes(size)
 			buf := make([]byte, size)
 
-			xof := blake3.New(0, nil).XOF()
+			xof := blake3.New().XOF()
 			for range b.N {
 				_, _ = xof.Seek(0, 0)
 				_, _ = xof.Read(buf)

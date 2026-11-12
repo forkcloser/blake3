@@ -15,7 +15,7 @@ import (
 	"encoding/binary"
 	"math/bits"
 
-	"github.com/forkcloser/blake3/internal/refimpl"
+	"github.com/forkcloser/blake3/v2/internal/refimpl"
 )
 
 const (

@@ -1,6 +1,6 @@
 //go:build amd64
 
-package guts
+package kernel
 
 import (
 	"os"

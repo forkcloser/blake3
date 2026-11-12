@@ -12,7 +12,7 @@ bench: do::perf::go::bench
 
 # avo lives in its own module (avo/go.mod) so it never enters the main
 # module's graph — do not fold it into the root go.mod.
-[doc('Verify guts/compress_amd64.s is the exact output of avo/gen.go')]
+[doc('Verify internal/kernel/compress_amd64.s is the exact output of avo/gen.go')]
 lint-generated:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -21,20 +21,20 @@ lint-generated:
     tmp=$(mktemp "${TMPDIR:-/tmp}/blake3-avo.XXXXXX")
     # shellcheck disable=SC2329 # invoked via trap, not dead code
     restore() {
-        cp "$tmp" guts/compress_amd64.s
+        cp "$tmp" internal/kernel/compress_amd64.s
         rm -f "$tmp"
     }
     trap restore EXIT
-    cp guts/compress_amd64.s "$tmp"
-    go generate ./guts
-    if ! cmp -s "$tmp" guts/compress_amd64.s; then
-        echo "guts/compress_amd64.s does not match the output of avo/gen.go — run 'just gen'" >&2
+    cp internal/kernel/compress_amd64.s "$tmp"
+    go generate ./internal/kernel
+    if ! cmp -s "$tmp" internal/kernel/compress_amd64.s; then
+        echo "internal/kernel/compress_amd64.s does not match the output of avo/gen.go — run 'just gen'" >&2
         exit 1
     fi
 
-[doc('Regenerate guts/compress_amd64.s from avo/gen.go')]
+[doc('Regenerate internal/kernel/compress_amd64.s from avo/gen.go')]
 gen:
-    go generate ./guts
+    go generate ./internal/kernel
 
 # A green run on a host without AVX-512 says nothing about the AVX-512
 # kernels; this names which paths ran. Diagnostic only — never fails.
@@ -156,7 +156,7 @@ test-isa isa:
 # use (AVX-512F), keeps that state in the emulator on every host (the book's
 # upstream page). Pin, which SDE is built on, needs ptrace of its own child:
 # the workflow sets kernel.yama.ptrace_scope=0 before this runs.
-[doc('Run the guts and root tests under Intel SDE emulating an AVX-512 CPU (linux/amd64 only)')]
+[doc('Run the kernel and root tests under Intel SDE emulating an AVX-512 CPU (linux/amd64 only)')]
 test-avx512-emulated:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -180,8 +180,8 @@ test-avx512-emulated:
     rm -rf build/sde/kit
     mkdir -p build/sde/kit
     tar -xJf "$kit" -C build/sde/kit --strip-components=1
-    go test -c -o build/sde/guts.test ./guts
-    BLAKE3_REQUIRE_ISA=avx512 build/sde/kit/sde64 -spr -force_emulate skx -- build/sde/guts.test -test.v | tee build/sde/test.log
+    go test -c -o build/sde/kernel.test ./internal/kernel
+    BLAKE3_REQUIRE_ISA=avx512 build/sde/kit/sde64 -spr -force_emulate skx -- build/sde/kernel.test -test.v | tee build/sde/test.log
     grep -q '^--- PASS: TestRequiredISA' build/sde/test.log || {
         echo "test-avx512-emulated: the tests passed but TestRequiredISA did not run" >&2
         exit 1
@@ -192,4 +192,4 @@ test-avx512-emulated:
     # unless a verify host happens to have it.
     go test -c -o build/sde/blake3.test .
     build/sde/kit/sde64 -spr -force_emulate skx -- build/sde/blake3.test -test.v | tee build/sde/test-root.log
-    echo "test-avx512-emulated: guts and root tests passed under SDE on the AVX-512 kernels"
+    echo "test-avx512-emulated: kernel and root tests passed under SDE on the AVX-512 kernels"

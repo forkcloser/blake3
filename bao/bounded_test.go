@@ -9,11 +9,12 @@ package bao_test
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"strconv"
 	"testing"
 
-	"github.com/forkcloser/blake3/bao"
+	"github.com/forkcloser/blake3/v2/bao"
 )
 
 // dataLengths are the lengths walked for a group size: each chunk boundary
@@ -70,55 +71,70 @@ func TestBoundedEncodings(t *testing.T) {
 				in := data[:n]
 				wantCombined, wantOutboard, wantRoot := refEncode(in, groupSize(group))
 
-				combined, root := bao.EncodeBuf(in, group, false)
+				combined, root := (bao.Encoding{Group: group}).EncodeBuf(in)
 				if root != wantRoot || !bytes.Equal(combined, wantCombined) {
 					t.Fatalf("len %d: the combined encoding is not the specification's", n)
 				}
 
-				outboard, root := bao.EncodeBuf(in, group, true)
+				outboard, root := (bao.Encoding{Group: group, Outboard: true}).EncodeBuf(in)
 				if root != wantRoot || !bytes.Equal(outboard, wantOutboard) {
 					t.Fatalf("len %d: the outboard encoding is not the specification's", n)
 				}
 
-				if bao.EncodedSize(n, group, false) != len(combined) ||
-					bao.EncodedSize(n, group, true) != len(outboard) {
+				if (bao.Encoding{Group: group}).EncodedSize(int64(n)) != int64(len(combined)) ||
+					(bao.Encoding{Group: group, Outboard: true}).EncodedSize(int64(n)) != int64(len(outboard)) {
 					t.Fatalf("len %d: EncodedSize is not the encoding's size", n)
 				}
 
 				var out bytes.Buffer
-				if ok, err := bao.Decode(
-					&out,
-					bytes.NewReader(combined),
-					nil,
-					group,
-					root,
-				); !ok || err != nil ||
+				if err := (bao.Encoding{Group: group}).Decode(&out, bytes.NewReader(combined), nil, root); err != nil ||
 					!bytes.Equal(out.Bytes(), in) {
-					t.Fatalf("len %d: Decode of the combined encoding = %v, %v, %d bytes", n, ok, err, out.Len())
+					t.Fatalf("len %d: Decode of the combined encoding = %v, %d bytes", n, err, out.Len())
 				}
 
 				out.Reset()
 
-				if ok, err := bao.Decode(
+				if err := (bao.Encoding{Group: group, Outboard: true}).Decode(
 					&out,
 					bytes.NewReader(in),
 					bytes.NewReader(outboard),
-					group,
 					root,
-				); !ok || err != nil ||
+				); err != nil ||
 					!bytes.Equal(out.Bytes(), in) {
-					t.Fatalf("len %d: Decode of the outboard encoding = %v, %v, %d bytes", n, ok, err, out.Len())
+					t.Fatalf("len %d: Decode of the outboard encoding = %v, %d bytes", n, err, out.Len())
 				}
 
-				if !bao.VerifyBuf(combined, nil, group, root) || !bao.VerifyBuf(in, outboard, group, root) {
-					t.Fatalf("len %d: VerifyBuf refused a valid encoding", n)
+				if err := (bao.Encoding{Group: group}).VerifyBuf(combined, nil, root); err != nil {
+					t.Fatalf("len %d: VerifyBuf refused a valid combined encoding: %v", n, err)
+				}
+
+				if err := (bao.Encoding{Group: group, Outboard: true}).VerifyBuf(in, outboard, root); err != nil {
+					t.Fatalf("len %d: VerifyBuf refused a valid outboard encoding: %v", n, err)
 				}
 
 				wrong := root
 				wrong[31] ^= 1
 
-				if bao.VerifyBuf(combined, nil, group, wrong) || bao.VerifyBuf(in, outboard, group, wrong) {
-					t.Fatalf("len %d: VerifyBuf accepted a wrong root", n)
+				if err := (bao.Encoding{Group: group}).VerifyBuf(
+					combined,
+					nil,
+					wrong,
+				); !errors.Is(
+					err,
+					bao.ErrVerification,
+				) {
+					t.Fatalf("len %d: VerifyBuf with a wrong root = %v, want ErrVerification", n, err)
+				}
+
+				if err := (bao.Encoding{Group: group, Outboard: true}).VerifyBuf(
+					in,
+					outboard,
+					wrong,
+				); !errors.Is(
+					err,
+					bao.ErrVerification,
+				) {
+					t.Fatalf("len %d: outboard VerifyBuf with a wrong root = %v, want ErrVerification", n, err)
 				}
 			}
 		})
@@ -167,8 +183,8 @@ func TestBoundedSlices(t *testing.T) {
 func boundedSlices(t *testing.T, data []byte, group int) {
 	t.Helper()
 
-	combined, root := bao.EncodeBuf(data, group, false)
-	outboard, _ := bao.EncodeBuf(data, group, true)
+	combined, root := (bao.Encoding{Group: group}).EncodeBuf(data)
+	outboard, _ := (bao.Encoding{Group: group, Outboard: true}).EncodeBuf(data)
 	wrong := root
 	wrong[0] ^= 1
 
@@ -181,7 +197,13 @@ func boundedSlices(t *testing.T, data []byte, group int) {
 			want := refSlice(data, groupSize(group), off, length)
 
 			var got bytes.Buffer
-			if err := bao.ExtractSlice(&got, bytes.NewReader(combined), nil, group, off, length); err != nil {
+			if err := (bao.Encoding{Group: group}).ExtractSlice(
+				&got,
+				bytes.NewReader(combined),
+				nil,
+				off,
+				length,
+			); err != nil {
 				t.Fatalf("(%d, %d): %v", off, length, err)
 			}
 
@@ -198,11 +220,10 @@ func boundedSlices(t *testing.T, data []byte, group int) {
 
 			got.Reset()
 
-			if err := bao.ExtractSlice(
+			if err := (bao.Encoding{Group: group, Outboard: true}).ExtractSlice(
 				&got,
 				bytes.NewReader(data[start:end]),
 				bytes.NewReader(outboard),
-				group,
 				off,
 				length,
 			); err != nil {
@@ -217,30 +238,45 @@ func boundedSlices(t *testing.T, data []byte, group int) {
 				)
 			}
 
-			out, ok := bao.VerifySlice(want, group, off, length, root)
-			if !ok || !bytes.Equal(out, data[off:off+length]) {
-				t.Fatalf("(%d, %d): VerifySlice = %d bytes, %v", off, length, len(out), ok)
+			out, err := (bao.Encoding{Group: group}).VerifySlice(want, off, length, root)
+			if err != nil || !bytes.Equal(out, data[off:off+length]) {
+				t.Fatalf("(%d, %d): VerifySlice = %d bytes, %v", off, length, len(out), err)
 			}
 
-			if _, ok := bao.VerifySlice(want, group, off, length, wrong); ok {
-				t.Fatalf("(%d, %d): VerifySlice accepted a wrong root", off, length)
+			if _, err := (bao.Encoding{Group: group}).VerifySlice(
+				want,
+				off,
+				length,
+				wrong,
+			); !errors.Is(
+				err,
+				bao.ErrVerification,
+			) {
+				t.Fatalf("(%d, %d): VerifySlice with a wrong root = %v, want ErrVerification", off, length, err)
 			}
 
 			var decoded bytes.Buffer
-			if ok, err := bao.DecodeSlice(
+			if err := (bao.Encoding{Group: group}).DecodeSlice(
 				&decoded,
 				bytes.NewReader(want),
-				group,
 				off,
 				length,
 				root,
-			); !ok || err != nil ||
+			); err != nil ||
 				!bytes.Equal(decoded.Bytes(), data[off:off+length]) {
-				t.Fatalf("(%d, %d): DecodeSlice = %v, %v, %d bytes", off, length, ok, err, decoded.Len())
+				t.Fatalf("(%d, %d): DecodeSlice = %v, %d bytes", off, length, err, decoded.Len())
 			}
 
-			if _, ok := bao.VerifySlice(append(bytes.Clone(want), 0), group, off, length, root); ok {
-				t.Fatalf("(%d, %d): VerifySlice accepted a trailing byte", off, length)
+			if _, err := (bao.Encoding{Group: group}).VerifySlice(
+				append(bytes.Clone(want), 0),
+				off,
+				length,
+				root,
+			); !errors.Is(
+				err,
+				bao.ErrVerification,
+			) {
+				t.Fatalf("(%d, %d): VerifySlice with a trailing byte = %v, want ErrVerification", off, length, err)
 			}
 		}
 	}
@@ -277,9 +313,9 @@ func TestBoundedVerifyChunk(t *testing.T) {
 	}
 
 	// One byte: the smallest content a zero-length request is refused over.
-	outboard, root := bao.EncodeBuf([]byte{0}, 0, true)
-	if bao.VerifyChunk(nil, outboard, 0, 0, root) {
-		t.Fatal("VerifyChunk with no chunks over one byte returned true")
+	outboard, root := (bao.Encoding{Outboard: true}).EncodeBuf([]byte{0})
+	if err := (bao.Encoding{}).VerifyChunk(nil, outboard, 0, root); !errors.Is(err, bao.ErrVerification) {
+		t.Fatalf("VerifyChunk with no chunks over one byte = %v, want ErrVerification", err)
 	}
 }
 
@@ -288,46 +324,86 @@ func boundedVerifyChunk(t *testing.T, data []byte) {
 
 	for _, group := range []int{0, 1, 2} {
 		gs := groupSize(group)
-		outboard, root := bao.EncodeBuf(data, group, true)
+		outboard, root := (bao.Encoding{Group: group, Outboard: true}).EncodeBuf(data)
 
 		for off := 0; off < len(data); off += gs {
 			chunk := data[off:min(off+gs, len(data))]
 
-			if !bao.VerifyChunk(chunk, outboard, group, uint64(off), root) {
-				t.Fatalf("group %d, offset %d: VerifyChunk refused", group, off)
+			if err := (bao.Encoding{Group: group}).VerifyChunk(chunk, outboard, uint64(off), root); err != nil {
+				t.Fatalf("group %d, offset %d: VerifyChunk refused: %v", group, off, err)
 			}
 
 			bad := bytes.Clone(chunk)
 			bad[len(bad)-1] ^= 1
 
-			if bao.VerifyChunk(bad, outboard, group, uint64(off), root) {
-				t.Fatalf("group %d, offset %d: VerifyChunk accepted a corrupted group", group, off)
+			refused := func(name string, err error) {
+				t.Helper()
+
+				if !errors.Is(err, bao.ErrVerification) {
+					t.Fatalf(
+						"group %d, offset %d: VerifyChunk with %s = %v, want ErrVerification",
+						group,
+						off,
+						name,
+						err,
+					)
+				}
 			}
 
-			if bao.VerifyChunk(chunk, outboard, group, uint64(off)+1, root) {
-				t.Fatalf("group %d, offset %d: VerifyChunk accepted a misaligned offset", group, off)
-			}
+			refused("a corrupted group", (bao.Encoding{Group: group}).VerifyChunk(bad, outboard, uint64(off), root))
+			refused(
+				"a misaligned offset",
+				(bao.Encoding{Group: group}).VerifyChunk(chunk, outboard, uint64(off)+1, root),
+			)
 		}
 
 		for _, run := range []int{2, 3} {
-			if run*gs <= len(data) && !bao.VerifyChunk(data[:run*gs], outboard, group, 0, root) {
-				t.Fatalf("group %d: VerifyChunk refused %d contiguous groups", group, run)
+			if run*gs > len(data) {
+				continue
+			}
+
+			if err := (bao.Encoding{Group: group}).VerifyChunk(data[:run*gs], outboard, 0, root); err != nil {
+				t.Fatalf("group %d: VerifyChunk refused %d contiguous groups: %v", group, run, err)
 			}
 		}
 
 		for _, off := range []uint64{0, uint64(gs), uint64(len(data))} {
-			if bao.VerifyChunk(nil, outboard, group, off, root) {
-				t.Fatalf("group %d, offset %d: VerifyChunk with no chunks returned true", group, off)
+			if err := (bao.Encoding{Group: group}).VerifyChunk(
+				nil,
+				outboard,
+				off,
+				root,
+			); !errors.Is(
+				err,
+				bao.ErrVerification,
+			) {
+				t.Fatalf("group %d, offset %d: VerifyChunk with no chunks = %v, want ErrVerification", group, off, err)
 			}
 		}
 
-		if bao.VerifyChunk(data[:gs], outboard[:len(outboard)-1], group, 0, root) {
-			t.Fatalf("group %d: VerifyChunk accepted a short outboard encoding", group)
+		if err := (bao.Encoding{Group: group}).VerifyChunk(
+			data[:gs],
+			outboard[:len(outboard)-1],
+			0,
+			root,
+		); !errors.Is(
+			err,
+			bao.ErrVerification,
+		) {
+			t.Fatalf("group %d: VerifyChunk with a short outboard encoding = %v, want ErrVerification", group, err)
 		}
 
 		huge := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
-		if bao.VerifyChunk(data[:gs], huge, group, 0, root) {
-			t.Fatalf("group %d: VerifyChunk accepted a header claiming 2^64-1 bytes", group)
+		if err := (bao.Encoding{Group: group}).VerifyChunk(
+			data[:gs],
+			huge,
+			0,
+			root,
+		); !errors.Is(
+			err,
+			bao.ErrVerification,
+		) {
+			t.Fatalf("group %d: VerifyChunk with a header claiming 2^64-1 bytes = %v, want ErrVerification", group, err)
 		}
 	}
 }
@@ -339,21 +415,20 @@ func TestBoundedStreaming(t *testing.T) {
 	t.Parallel()
 
 	data := cData(t, 3*1024+5)
-	combined, root := bao.EncodeBuf(data, 0, false)
+	combined, root := (bao.Encoding{}).EncodeBuf(data)
 
 	var out bytes.Buffer
 
-	ok, err := bao.Decode(&oneByteWriter{&out}, &oneByteReader{bytes.NewReader(combined)}, nil, 0, root)
-	if !ok || err != nil || !bytes.Equal(out.Bytes(), data) {
-		t.Fatalf("Decode a byte at a time = %v, %v, %d bytes", ok, err, out.Len())
+	err := (bao.Encoding{}).Decode(&oneByteWriter{&out}, &oneByteReader{bytes.NewReader(combined)}, nil, root)
+	if err != nil || !bytes.Equal(out.Bytes(), data) {
+		t.Fatalf("Decode a byte at a time = %v, %d bytes", err, out.Len())
 	}
 
 	var slice bytes.Buffer
-	if err := bao.ExtractSlice(
+	if err := (bao.Encoding{}).ExtractSlice(
 		&oneByteWriter{&slice},
 		&oneByteReader{bytes.NewReader(combined)},
 		nil,
-		0,
 		1000,
 		1000,
 	); err != nil {
