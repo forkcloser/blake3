@@ -22,8 +22,8 @@ import (
 func FuzzDecoders(f *testing.F) {
 	seedData := cData(f, 5*1024+17)
 	for _, group := range []int{0, 2} {
-		combined, _ := bao.EncodeBuf(seedData, group, false)
-		outboard, _ := bao.EncodeBuf(seedData, group, true)
+		combined, _ := (bao.Encoding{Group: group}).EncodeBuf(seedData)
+		outboard, _ := (bao.Encoding{Group: group, Outboard: true}).EncodeBuf(seedData)
 		f.Add(combined, seedData, uint8(group), uint64(0), uint64(len(seedData)))
 		f.Add(outboard, seedData, uint8(group), uint64(1024), uint64(100))
 		f.Add(combined[:len(combined)/2], seedData, uint8(group), uint64(0), uint64(1))
@@ -36,27 +36,23 @@ func FuzzDecoders(f *testing.F) {
 		g := int(group % 7)
 		root := blake3.Sum256(data)
 
-		_, _ = bao.Decode(io.Discard, bytes.NewReader(enc), nil, g, root)
-		_, _ = bao.Decode(io.Discard, bytes.NewReader(data), bytes.NewReader(enc), g, root)
-		bao.VerifyBuf(enc, nil, g, root)
-		bao.VerifyBuf(data, enc, g, root)
-		_, _ = bao.DecodeSlice(io.Discard, bytes.NewReader(enc), g, offset, length, root)
-		bao.VerifySlice(enc, g, offset, length, root)
-		bao.VerifyChunk(data, enc, g, offset, root)
-		_ = bao.ExtractSlice(io.Discard, bytes.NewReader(enc), nil, g, offset, length)
-		_ = bao.ExtractSlice(io.Discard, bytes.NewReader(data), bytes.NewReader(enc), g, offset, length)
+		combined, outboard := bao.Encoding{Group: g}, bao.Encoding{Group: g, Outboard: true}
+
+		_ = combined.Decode(io.Discard, bytes.NewReader(enc), nil, root)
+		_ = outboard.Decode(io.Discard, bytes.NewReader(data), bytes.NewReader(enc), root)
+		_ = combined.VerifyBuf(enc, nil, root)
+		_ = outboard.VerifyBuf(data, enc, root)
+		_ = combined.DecodeSlice(io.Discard, bytes.NewReader(enc), offset, length, root)
+		_, _ = combined.VerifySlice(enc, offset, length, root)
+		_ = combined.VerifyChunk(data, enc, offset, root)
+		_ = combined.ExtractSlice(io.Discard, bytes.NewReader(enc), nil, offset, length)
+		_ = outboard.ExtractSlice(io.Discard, bytes.NewReader(data), bytes.NewReader(enc), offset, length)
 
 		// A combined encoding that verifies must decode to exactly the data
 		// whose root it was checked against: the decoder's acceptance is the
 		// security property, so a false accept here is the bug that matters.
 		var out bytes.Buffer
-		if ok, err := bao.Decode(
-			&out,
-			bytes.NewReader(enc),
-			nil,
-			g,
-			root,
-		); ok && err == nil &&
+		if err := combined.Decode(&out, bytes.NewReader(enc), nil, root); err == nil &&
 			!bytes.Equal(out.Bytes(), data) {
 			t.Fatalf("group %d: Decode accepted an encoding that is not of the data whose root it was given", g)
 		}
@@ -80,11 +76,17 @@ func FuzzSlices(f *testing.F) {
 			length %= uint64(len(data)) - offset + 1
 		}
 
-		combined, root := bao.EncodeBuf(data, g, false)
+		combined, root := (bao.Encoding{Group: g}).EncodeBuf(data)
 		want := refSlice(data, 1024<<g, offset, length)
 
 		var got bytes.Buffer
-		if err := bao.ExtractSlice(&got, bytes.NewReader(combined), nil, g, offset, length); err != nil {
+		if err := (bao.Encoding{Group: g}).ExtractSlice(
+			&got,
+			bytes.NewReader(combined),
+			nil,
+			offset,
+			length,
+		); err != nil {
 			t.Fatal(err)
 		}
 
@@ -92,9 +94,9 @@ func FuzzSlices(f *testing.F) {
 			t.Fatalf("group %d (%d, %d): the slice is not the specification's", g, offset, length)
 		}
 
-		out, ok := bao.VerifySlice(want, g, offset, length, root)
-		if !ok || !bytes.Equal(out, data[offset:offset+length]) {
-			t.Fatalf("group %d (%d, %d): VerifySlice = %d bytes, %v", g, offset, length, len(out), ok)
+		out, err := (bao.Encoding{Group: g}).VerifySlice(want, offset, length, root)
+		if err != nil || !bytes.Equal(out, data[offset:offset+length]) {
+			t.Fatalf("group %d (%d, %d): VerifySlice = %d bytes, %v", g, offset, length, len(out), err)
 		}
 	})
 }

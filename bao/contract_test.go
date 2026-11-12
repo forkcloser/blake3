@@ -77,11 +77,14 @@ func TestContractReferenceEncoder(t *testing.T) {
 		t.Fatal("the reference encoder disagrees with the golden files")
 	}
 
-	if got, gotRoot := bao.EncodeBuf(data, 0, false); gotRoot != root || !bytes.Equal(got, goldenCombined) {
+	if got, gotRoot := (bao.Encoding{}).EncodeBuf(data); gotRoot != root || !bytes.Equal(got, goldenCombined) {
 		t.Fatal("EncodeBuf disagrees with the golden combined encoding")
 	}
 
-	if got, gotRoot := bao.EncodeBuf(data, 0, true); gotRoot != root || !bytes.Equal(got, goldenOutboard) {
+	if got, gotRoot := (bao.Encoding{Outboard: true}).EncodeBuf(
+		data,
+	); gotRoot != root ||
+		!bytes.Equal(got, goldenOutboard) {
 		t.Fatal("EncodeBuf disagrees with the golden outboard encoding")
 	}
 
@@ -118,7 +121,7 @@ func TestContractReferenceEncoder(t *testing.T) {
 			t.Fatalf("len %d: the reference root is not abao's", test.inputLen)
 		}
 
-		if _, root := bao.EncodeBuf(in, 4, false); hex.EncodeToString(root[:]) != test.root {
+		if _, root := (bao.Encoding{Group: 4}).EncodeBuf(in); hex.EncodeToString(root[:]) != test.root {
 			t.Fatalf("len %d: EncodeBuf's root is not abao's", test.inputLen)
 		}
 	}
@@ -132,7 +135,7 @@ func TestContractRootIsHash(t *testing.T) {
 	data := cData(t, 150000) // more than two of the largest groups below
 
 	for group := range 7 {
-		_, root := bao.EncodeBuf(data, group, true)
+		_, root := (bao.Encoding{Group: group, Outboard: true}).EncodeBuf(data)
 		if root != blake3.Sum256(data) {
 			t.Fatalf("group %d: the root is not Sum256", group)
 		}
@@ -158,101 +161,116 @@ var errBoom = errors.New("boom")
 
 // TestContractErrors: a destination or a source that fails is its own error,
 // wrapped, from Encode, Decode, ExtractSlice and DecodeSlice; a slice request
-// past the content is ErrSliceLength; a verification failure is false with a
-// nil error.
+// past the content is ErrSliceLength; content that does not verify is
+// ErrVerification.
 func TestContractErrors(t *testing.T) {
 	t.Parallel()
 
 	data := cData(t, 4096)
-	enc, root := bao.EncodeBuf(data, 0, false)
+	enc, root := (bao.Encoding{}).EncodeBuf(data)
 
-	if _, err := bao.Encode(
-		failingAt{errBoom},
-		bytes.NewReader(data),
-		int64(len(data)),
-		0,
-		false,
-	); !errors.Is(
+	if _, err := (bao.Encoding{}).Encode(failingAt{errBoom}, bytes.NewReader(data), int64(len(data))); !errors.Is(
 		err,
 		errBoom,
 	) {
 		t.Errorf("Encode with a failing destination: %v", err)
 	}
 
-	if _, err := bao.Encode(
-		&cDiscardAt{},
-		failingReader{errBoom},
-		int64(len(data)),
-		0,
-		false,
-	); !errors.Is(
+	if _, err := (bao.Encoding{}).Encode(&cDiscardAt{}, failingReader{errBoom}, int64(len(data))); !errors.Is(
 		err,
 		errBoom,
 	) {
 		t.Errorf("Encode with a failing source: %v", err)
 	}
 
-	if _, err := bao.Decode(io.Discard, failingReader{errBoom}, nil, 0, root); !errors.Is(err, errBoom) {
+	if err := (bao.Encoding{}).Decode(io.Discard, failingReader{errBoom}, nil, root); !errors.Is(err, errBoom) {
 		t.Errorf("Decode with a failing source: %v", err)
 	}
 
-	if ok, err := bao.Decode(
+	if err := (bao.Encoding{}).Decode(
+		failingWriter{errBoom},
+		bytes.NewReader(enc),
+		nil,
+		root,
+	); !errors.Is(
+		err,
+		errBoom,
+	) {
+		t.Errorf("Decode with a failing destination: %v", err)
+	}
+
+	if err := (bao.Encoding{}).Decode(
+		io.Discard,
+		bytes.NewReader(enc),
+		nil,
+		[32]byte{},
+	); !errors.Is(
+		err,
+		bao.ErrVerification,
+	) {
+		t.Errorf("Decode with a wrong root: %v, want ErrVerification", err)
+	}
+
+	if err := (bao.Encoding{}).ExtractSlice(
 		failingWriter{errBoom},
 		bytes.NewReader(enc),
 		nil,
 		0,
-		root,
-	); ok ||
-		!errors.Is(err, errBoom) {
-		t.Errorf("Decode with a failing destination: %v, %v", ok, err)
-	}
-
-	if ok, err := bao.Decode(io.Discard, bytes.NewReader(enc), nil, 0, [32]byte{}); ok || err != nil {
-		t.Errorf("Decode with a wrong root: %v, %v, want false, nil", ok, err)
-	}
-
-	if err := bao.ExtractSlice(failingWriter{errBoom}, bytes.NewReader(enc), nil, 0, 0, 10); !errors.Is(err, errBoom) {
+		10,
+	); !errors.Is(
+		err,
+		errBoom,
+	) {
 		t.Errorf("ExtractSlice with a failing destination: %v", err)
 	}
 
 	// The whole content as a slice: four groups, so the walk goes on past
 	// the failed write and stops on the error it recorded.
 	var slice bytes.Buffer
-	if err := bao.ExtractSlice(&slice, bytes.NewReader(enc), nil, 0, 0, uint64(len(data))); err != nil {
+	if err := (bao.Encoding{}).ExtractSlice(&slice, bytes.NewReader(enc), nil, 0, uint64(len(data))); err != nil {
 		t.Fatal(err)
 	}
 
-	if ok, err := bao.DecodeSlice(
+	if err := (bao.Encoding{}).DecodeSlice(
 		failingWriter{errBoom},
 		&slice,
 		0,
-		0,
 		uint64(len(data)),
 		root,
-	); ok ||
-		!errors.Is(err, errBoom) {
-		t.Errorf("DecodeSlice with a failing destination: %v, %v", ok, err)
+	); !errors.Is(
+		err,
+		errBoom,
+	) {
+		t.Errorf("DecodeSlice with a failing destination: %v", err)
 	}
 
-	if err := bao.ExtractSlice(io.Discard, failingReader{errBoom}, nil, 0, 0, 10); !errors.Is(err, errBoom) {
+	if err := (bao.Encoding{}).ExtractSlice(io.Discard, failingReader{errBoom}, nil, 0, 10); !errors.Is(err, errBoom) {
 		t.Errorf("ExtractSlice with a failing source: %v", err)
 	}
 
 	for _, test := range []struct{ off, len uint64 }{
 		{0, 4097}, {4096, 1}, {1 << 63, 1<<63 + 10}, {math.MaxUint64, math.MaxUint64},
 	} {
-		err := bao.ExtractSlice(io.Discard, bytes.NewReader(enc), nil, 0, test.off, test.len)
+		err := (bao.Encoding{}).ExtractSlice(io.Discard, bytes.NewReader(enc), nil, test.off, test.len)
 		if !errors.Is(err, bao.ErrSliceLength) {
 			t.Errorf("ExtractSlice (%d, %d): %v, want ErrSliceLength", test.off, test.len, err)
 		}
 
-		ok, err := bao.DecodeSlice(io.Discard, bytes.NewReader(enc), 0, test.off, test.len, root)
-		if ok || !errors.Is(err, bao.ErrSliceLength) {
-			t.Errorf("DecodeSlice (%d, %d): %v, %v, want false, ErrSliceLength", test.off, test.len, ok, err)
+		if err := (bao.Encoding{}).DecodeSlice(
+			io.Discard,
+			bytes.NewReader(enc),
+			test.off,
+			test.len,
+			root,
+		); !errors.Is(
+			err,
+			bao.ErrSliceLength,
+		) {
+			t.Errorf("DecodeSlice (%d, %d): %v, want ErrSliceLength", test.off, test.len, err)
 		}
 
-		if _, ok := bao.VerifySlice(enc, 0, test.off, test.len, root); ok {
-			t.Errorf("VerifySlice (%d, %d) accepted", test.off, test.len)
+		if _, err := (bao.Encoding{}).VerifySlice(enc, test.off, test.len, root); !errors.Is(err, bao.ErrSliceLength) {
+			t.Errorf("VerifySlice (%d, %d): %v, want ErrSliceLength", test.off, test.len, err)
 		}
 	}
 
@@ -262,12 +280,12 @@ func TestContractErrors(t *testing.T) {
 			want = io.EOF
 		}
 
-		if err := bao.ExtractSlice(io.Discard, bytes.NewReader(short), nil, 0, 0, 1); !errors.Is(err, want) {
+		if err := (bao.Encoding{}).ExtractSlice(io.Discard, bytes.NewReader(short), nil, 0, 1); !errors.Is(err, want) {
 			t.Errorf("ExtractSlice on %d header bytes: %v, want %v", len(short), err, want)
 		}
 
-		if ok, err := bao.DecodeSlice(io.Discard, bytes.NewReader(short), 0, 0, 1, root); ok || !errors.Is(err, want) {
-			t.Errorf("DecodeSlice on %d header bytes: %v, %v, want false, %v", len(short), ok, err, want)
+		if err := (bao.Encoding{}).DecodeSlice(io.Discard, bytes.NewReader(short), 0, 1, root); !errors.Is(err, want) {
+			t.Errorf("DecodeSlice on %d header bytes: %v, want %v", len(short), err, want)
 		}
 	}
 }
@@ -285,8 +303,8 @@ func TestContractArguments(t *testing.T) {
 	t.Parallel()
 
 	data := cData(t, 3000)
-	enc, root := bao.EncodeBuf(data, 0, false)
-	obd, _ := bao.EncodeBuf(data, 0, true)
+	enc, root := (bao.Encoding{}).EncodeBuf(data)
+	obd, _ := (bao.Encoding{Outboard: true}).EncodeBuf(data)
 
 	mustPanic := func(name string, f func()) {
 		t.Helper()
@@ -299,7 +317,7 @@ func TestContractArguments(t *testing.T) {
 				return
 			}
 
-			if msg, ok := r.(string); !ok || !strings.Contains(msg, "group") && !strings.Contains(msg, "negative") {
+			if msg, ok := r.(string); !ok || !strings.Contains(msg, "Group") && !strings.Contains(msg, "negative") {
 				t.Errorf("%s: panicked with %v, want the named message", name, r)
 			}
 		}()
@@ -308,28 +326,39 @@ func TestContractArguments(t *testing.T) {
 	}
 
 	for _, group := range []int{-1, bao.MaxGroup + 1, math.MinInt, math.MaxInt} {
-		mustPanic("EncodedSize", func() { bao.EncodedSize(10, group, false) })
+		mustPanic("EncodedSize", func() { (bao.Encoding{Group: group}).EncodedSize(10) })
 		mustPanic(
 			"Encode",
-			func() { _, _ = bao.Encode(&cDiscardAt{}, bytes.NewReader(data), int64(len(data)), group, false) },
+			func() {
+				_, _ = (bao.Encoding{Group: group}).Encode(&cDiscardAt{}, bytes.NewReader(data), int64(len(data)))
+			},
 		)
-		mustPanic("Decode", func() { _, _ = bao.Decode(io.Discard, bytes.NewReader(enc), nil, group, root) })
-		mustPanic("EncodeBuf", func() { bao.EncodeBuf(data, group, false) })
-		mustPanic("VerifyBuf", func() { bao.VerifyBuf(enc, nil, group, root) })
-		mustPanic("ExtractSlice", func() { _ = bao.ExtractSlice(io.Discard, bytes.NewReader(enc), nil, group, 0, 1) })
-		mustPanic("DecodeSlice", func() { _, _ = bao.DecodeSlice(io.Discard, bytes.NewReader(enc), group, 0, 1, root) })
-		mustPanic("VerifySlice", func() { bao.VerifySlice(enc, group, 0, 1, root) })
-		mustPanic("VerifyChunk", func() { bao.VerifyChunk(data, obd, group, 0, root) })
+		mustPanic(
+			"Decode",
+			func() { _ = (bao.Encoding{Group: group}).Decode(io.Discard, bytes.NewReader(enc), nil, root) },
+		)
+		mustPanic("EncodeBuf", func() { (bao.Encoding{Group: group}).EncodeBuf(data) })
+		mustPanic("VerifyBuf", func() { _ = (bao.Encoding{Group: group}).VerifyBuf(enc, nil, root) })
+		mustPanic(
+			"ExtractSlice",
+			func() { _ = (bao.Encoding{Group: group}).ExtractSlice(io.Discard, bytes.NewReader(enc), nil, 0, 1) },
+		)
+		mustPanic(
+			"DecodeSlice",
+			func() { _ = (bao.Encoding{Group: group}).DecodeSlice(io.Discard, bytes.NewReader(enc), 0, 1, root) },
+		)
+		mustPanic("VerifySlice", func() { _, _ = (bao.Encoding{Group: group}).VerifySlice(enc, 0, 1, root) })
+		mustPanic("VerifyChunk", func() { _ = (bao.Encoding{Group: group}).VerifyChunk(data, obd, 0, root) })
 	}
 
-	if got := bao.EncodedSize(10, bao.MaxGroup, true); got != 8 {
+	if got := (bao.Encoding{Group: bao.MaxGroup, Outboard: true}).EncodedSize(10); got != 8 {
 		t.Errorf("EncodedSize at MaxGroup = %d, want 8", got)
 	}
 
 	var written cCountingAt
 
-	mustPanic("Encode negative", func() { _, _ = bao.Encode(&written, bytes.NewReader(nil), -1, 0, false) })
-	mustPanic("EncodedSize negative", func() { bao.EncodedSize(-1, 0, false) })
+	mustPanic("Encode negative", func() { _, _ = (bao.Encoding{}).Encode(&written, bytes.NewReader(nil), -1) })
+	mustPanic("EncodedSize negative", func() { (bao.Encoding{}).EncodedSize(-1) })
 
 	if written != 0 {
 		t.Errorf("Encode wrote %d bytes before refusing a negative length", written)
@@ -354,7 +383,7 @@ func TestContractDecoderWritesVerifiedOnly(t *testing.T) {
 	t.Parallel()
 
 	data := cData(t, 3*1024+100)
-	enc, root := bao.EncodeBuf(data, 0, false)
+	enc, root := (bao.Encoding{}).EncodeBuf(data)
 
 	for i := range enc {
 		bad := bytes.Clone(enc)
@@ -362,12 +391,12 @@ func TestContractDecoderWritesVerifiedOnly(t *testing.T) {
 
 		var out bytes.Buffer
 
-		ok, err := bao.Decode(&out, bytes.NewReader(bad), nil, 0, root)
-		if ok {
+		err := (bao.Encoding{}).Decode(&out, bytes.NewReader(bad), nil, root)
+		if err == nil {
 			t.Fatalf("byte %d flipped: Decode accepted", i)
 		}
 
-		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		if !errors.Is(err, bao.ErrVerification) && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 			t.Fatalf("byte %d flipped: %v", i, err)
 		}
 
@@ -375,7 +404,7 @@ func TestContractDecoderWritesVerifiedOnly(t *testing.T) {
 			t.Fatalf("byte %d flipped: %d unverified bytes written", i, out.Len())
 		}
 
-		if bao.VerifyBuf(bad, nil, 0, root) {
+		if (bao.Encoding{}).VerifyBuf(bad, nil, root) == nil {
 			t.Fatalf("byte %d flipped: VerifyBuf accepted", i)
 		}
 	}
@@ -383,29 +412,37 @@ func TestContractDecoderWritesVerifiedOnly(t *testing.T) {
 	// truncated at every length
 	for n := range enc {
 		var out bytes.Buffer
-		if ok, _ := bao.Decode(&out, bytes.NewReader(enc[:n]), nil, 0, root); ok {
+		if err := (bao.Encoding{}).Decode(&out, bytes.NewReader(enc[:n]), nil, root); err == nil {
 			t.Fatalf("truncated to %d: Decode accepted", n)
 		} else if !bytes.HasPrefix(data, out.Bytes()) {
 			t.Fatalf("truncated to %d: unverified bytes written", n)
 		}
 
-		if bao.VerifyBuf(enc[:n], nil, 0, root) {
+		if (bao.Encoding{}).VerifyBuf(enc[:n], nil, root) == nil {
 			t.Fatalf("truncated to %d: VerifyBuf accepted", n)
 		}
 	}
 
 	// trailing bytes
-	if bao.VerifyBuf(append(bytes.Clone(enc), 0), nil, 0, root) {
-		t.Fatal("VerifyBuf accepted trailing data")
+	if err := (bao.Encoding{}).VerifyBuf(append(bytes.Clone(enc), 0), nil, root); !errors.Is(err, bao.ErrVerification) {
+		t.Fatalf("VerifyBuf with trailing data = %v, want ErrVerification", err)
 	}
 
 	// the empty encoding verifies its one empty chunk: a wrong root is refused
-	empty, emptyRoot := bao.EncodeBuf(nil, 0, false)
-	if !bao.VerifyBuf(empty, nil, 0, emptyRoot) || bao.VerifyBuf(empty, nil, 0, [32]byte{}) {
-		t.Fatal("the empty encoding is not held to its root")
+	empty, emptyRoot := (bao.Encoding{}).EncodeBuf(nil)
+	if err := (bao.Encoding{}).VerifyBuf(empty, nil, emptyRoot); err != nil {
+		t.Fatalf("the empty encoding is refused: %v", err)
 	}
 
-	if !bao.VerifyChunk(nil, empty, 0, 0, emptyRoot) || bao.VerifyChunk(nil, empty, 0, 0, [32]byte{}) {
-		t.Fatal("VerifyChunk does not hold the empty encoding to its root")
+	if err := (bao.Encoding{}).VerifyBuf(empty, nil, [32]byte{}); !errors.Is(err, bao.ErrVerification) {
+		t.Fatalf("the empty encoding is not held to its root: %v", err)
+	}
+
+	if err := (bao.Encoding{}).VerifyChunk(nil, empty, 0, emptyRoot); err != nil {
+		t.Fatalf("VerifyChunk refuses the empty encoding: %v", err)
+	}
+
+	if err := (bao.Encoding{}).VerifyChunk(nil, empty, 0, [32]byte{}); !errors.Is(err, bao.ErrVerification) {
+		t.Fatalf("VerifyChunk does not hold the empty encoding to its root: %v", err)
 	}
 }
