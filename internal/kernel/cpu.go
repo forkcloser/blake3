@@ -4,7 +4,7 @@
 
 //go:build amd64
 
-package guts
+package kernel
 
 import "golang.org/x/sys/cpu"
 

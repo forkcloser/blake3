@@ -1,11 +1,10 @@
-// Package guts provides a low-level interface to the BLAKE3 cryptographic hash
-// function: the compression function, chunk and parent nodes, and the
-// tree-hashing helpers that packages blake3 and bao are built from. It is for
-// callers that hash their own trees; to hash data, use package blake3.
+// Package kernel is the BLAKE3 engine behind packages blake3, bao and guts:
+// the compression function, chunk and parent nodes, the SIMD kernels and the
+// tree-hashing helpers, with how a tree is dealt out across goroutines. Package
+// guts exports the primitives; this package is the module's own.
 //
-// This is the module's stable low-level surface. What every function computes
-// is fixed by the BLAKE3 specification and pinned by the official test
-// vectors, so the only kind of change expected here is additive. On amd64 the
+// What every function computes is fixed by the BLAKE3 specification and
+// pinned by the official test vectors. On amd64 the
 // AVX-512 and AVX2 kernels are selected at runtime from the CPU's features,
 // with the pure-Go code as the fallback everywhere; every path produces
 // identical results.
@@ -13,7 +12,7 @@
 // Functions that take pointers read (and, where documented, write) through
 // them only for the duration of the call. Nothing here is safe for concurrent
 // use on shared mutable arguments.
-package guts
+package kernel
 
 import (
 	"math/bits"
@@ -37,11 +36,11 @@ const (
 	MaxSIMD = 16 // AVX-512 vectors can store 16 words
 )
 
-// KernelWidth is the number of chunks CompressBuffer compresses at once on
+// Width is the number of chunks CompressBuffer compresses at once on
 // this host: MaxSIMD where a SIMD kernel is dispatched, whose lanes all run
 // whatever the buffer holds, and 1 in pure Go, which goes chunk by chunk. A
 // caller choosing how much input to hold back does best holding a multiple.
-func KernelWidth() int {
+func Width() int {
 	if kernelsDispatched() {
 		return MaxSIMD
 	}
@@ -128,7 +127,7 @@ func CompressEigentree(buf []byte, key *[8]uint32, counter uint64, flags uint32)
 	numChunks := uint64(len(buf) / ChunkSize)
 	switch {
 	case len(buf)%ChunkSize != 0 || bits.OnesCount64(numChunks) != 1:
-		panic("guts: an eigentree is a power-of-two number of whole chunks")
+		panic("blake3: an eigentree is a power-of-two number of whole chunks")
 	case numChunks == 1:
 		return CompressChunk(buf, key, counter, flags)
 	case numChunks <= MaxSIMD:

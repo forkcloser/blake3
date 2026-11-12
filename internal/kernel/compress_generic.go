@@ -1,4 +1,4 @@
-package guts
+package kernel
 
 import (
 	"math/bits"

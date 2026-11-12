@@ -17,7 +17,7 @@ import (
 	"testing"
 
 	"github.com/forkcloser/blake3"
-	"github.com/forkcloser/blake3/guts"
+	"github.com/forkcloser/blake3/internal/kernel"
 	"github.com/forkcloser/blake3/internal/refimpl"
 )
 
@@ -34,28 +34,28 @@ func inputLengths() []int {
 	}
 
 	add(0)
-	add(guts.BlockSize)
-	add(2 * guts.BlockSize)
-	add(guts.ChunkSize)
-	add(2 * guts.ChunkSize)
-	add(3 * guts.ChunkSize)
+	add(kernel.BlockSize)
+	add(2 * kernel.BlockSize)
+	add(kernel.ChunkSize)
+	add(2 * kernel.ChunkSize)
+	add(3 * kernel.ChunkSize)
 
 	for c := 4; c <= 128; c *= 2 { // powers of two of chunks: 4 .. 128
-		add(c * guts.ChunkSize)
-		add((c + 1) * guts.ChunkSize)
-		add((c - 1) * guts.ChunkSize)
+		add(c * kernel.ChunkSize)
+		add((c + 1) * kernel.ChunkSize)
+		add((c - 1) * kernel.ChunkSize)
 	}
 
-	add(guts.MaxSIMD * guts.ChunkSize)     // the SIMD group
-	add(24 * 1024)                         // the parallel-write threshold
-	add(32 * 1024)                         // io.Copy's buffer
-	add(100 * guts.ChunkSize)              // not a power of two, a cascade of trees
-	add(2*guts.MaxSIMD*guts.ChunkSize + 1) // two groups and a byte
+	add(kernel.MaxSIMD * kernel.ChunkSize)     // the SIMD group
+	add(24 * 1024)                             // the parallel-write threshold
+	add(32 * 1024)                             // io.Copy's buffer
+	add(100 * kernel.ChunkSize)                // not a power of two, a cascade of trees
+	add(2*kernel.MaxSIMD*kernel.ChunkSize + 1) // two groups and a byte
 	// A tree of 64 groups: more groups than any host here has CPUs, so the
 	// groups are dealt out in runs of several and the run loops are walked,
 	// which a tree of one group per CPU never does.
-	add(1024 * guts.ChunkSize)
-	add(1025 * guts.ChunkSize)
+	add(1024 * kernel.ChunkSize)
+	add(1025 * kernel.ChunkSize)
 
 	return lengths
 }
@@ -118,14 +118,14 @@ func modes() []mode {
 func splits(n int) [][]int {
 	cuts := [][]int{nil} // one write
 
-	for _, at := range []int{1, guts.BlockSize, guts.ChunkSize - 1, guts.ChunkSize, guts.ChunkSize + 1, 3*guts.ChunkSize + 5, 16 * guts.ChunkSize, n / 2} {
+	for _, at := range []int{1, kernel.BlockSize, kernel.ChunkSize - 1, kernel.ChunkSize, kernel.ChunkSize + 1, 3*kernel.ChunkSize + 5, 16 * kernel.ChunkSize, n / 2} {
 		if at > 0 && at < n {
 			cuts = append(cuts, []int{at})
 		}
 	}
 
-	if n > 2*guts.ChunkSize+2 {
-		cuts = append(cuts, []int{guts.ChunkSize - 1, 2 * guts.ChunkSize, 2*guts.ChunkSize + 2})
+	if n > 2*kernel.ChunkSize+2 {
+		cuts = append(cuts, []int{kernel.ChunkSize - 1, 2 * kernel.ChunkSize, 2*kernel.ChunkSize + 2})
 	}
 
 	if n > 300 {
@@ -157,7 +157,7 @@ func write(h *blake3.Hasher, in []byte, cuts []int) {
 func TestBoundedLengths(t *testing.T) {
 	t.Parallel()
 
-	data := make([]byte, 1026*guts.ChunkSize)
+	data := make([]byte, 1026*kernel.ChunkSize)
 	if _, err := rand.NewChaCha8([32]byte{2}).Read(data); err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestBoundedLengths(t *testing.T) {
 func outputOffsets() []uint64 {
 	var offsets []uint64
 
-	for _, b := range []uint64{0, guts.BlockSize, 2 * guts.BlockSize, 1024, 2048, 16 * 1024, 32 * 1024, 64 * 1024} {
+	for _, b := range []uint64{0, kernel.BlockSize, 2 * kernel.BlockSize, 1024, 2048, 16 * 1024, 32 * 1024, 64 * 1024} {
 		for _, d := range []int64{-1, 0, 1} {
 			if int64(b)+d >= 0 {
 				offsets = append(offsets, uint64(int64(b)+d))
@@ -222,9 +222,9 @@ func outputOffsets() []uint64 {
 
 	offsets = append(
 		offsets,
-		1<<32*guts.BlockSize-1,
-		1<<32*guts.BlockSize,
-		1<<32*guts.BlockSize+1,
+		1<<32*kernel.BlockSize-1,
+		1<<32*kernel.BlockSize,
+		1<<32*kernel.BlockSize+1,
 	) // a block counter past 32 bits
 
 	return offsets
@@ -242,7 +242,7 @@ func readSizes() []int {
 func TestBoundedXOFReads(t *testing.T) {
 	t.Parallel()
 
-	in := cInput(guts.ChunkSize + 1)
+	in := cInput(kernel.ChunkSize + 1)
 	ref := refimpl.New()
 	ref.Update(in)
 

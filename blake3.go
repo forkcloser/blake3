@@ -29,7 +29,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/forkcloser/blake3/guts"
+	"github.com/forkcloser/blake3/internal/kernel"
 )
 
 // Hasher implements hash.Hash. See the package documentation for its
@@ -43,24 +43,24 @@ type Hasher struct {
 	stack [64][8]uint32
 	// counter is the number of chunks compressed into the stack, and a bit
 	// vector of the heights it occupies. Write keeps it a multiple of
-	// guts.MaxSIMD.
+	// kernel.MaxSIMD.
 	counter uint64
 
 	// buf is the input not yet compressed: the tail, held back because the
 	// last chunk has to wait for Sum, where it is the root or the tree's
 	// right edge. How much is held is the path's: one chunk in pure Go, a
-	// whole group of guts.MaxSIMD chunks where the SIMD kernels run, so
+	// whole group of kernel.MaxSIMD chunks where the SIMD kernels run, so
 	// that counter stays group-aligned, every tree Write compresses is
 	// whole groups, and the kernels, which compute all their lanes
 	// whatever they are handed, run full.
-	buf    [guts.MaxSIMD * guts.ChunkSize]byte
+	buf    [kernel.MaxSIMD * kernel.ChunkSize]byte
 	buflen int
 }
 
 // Write implements hash.Hash. It always returns len(p), nil.
 func (h *Hasher) Write(p []byte) (int, error) {
 	lenp := len(p)
-	hold := guts.KernelWidth() * guts.ChunkSize
+	hold := kernel.Width() * kernel.ChunkSize
 
 	// Fill the held buffer first; input that fits in it is held back.
 	if h.buflen > 0 {
@@ -79,8 +79,8 @@ func (h *Hasher) Write(p []byte) (int, error) {
 	// be dealt out with them. Then p's whole units follow, and p's last
 	// unit, full or partial, is held back in its turn.
 	flush := h.buflen == hold
-	if flush && hold == guts.ChunkSize {
-		h.pushSubtree(guts.ChainingValue(guts.CompressChunk(h.buf[:hold], &h.key, h.counter, h.flags)), 0)
+	if flush && hold == kernel.ChunkSize {
+		h.pushSubtree(kernel.ChainingValue(kernel.CompressChunk(h.buf[:hold], &h.key, h.counter, h.flags)), 0)
 
 		flush = false
 	}
@@ -105,8 +105,8 @@ func (h *Hasher) Sum(b []byte) (sum []byte) {
 	// Read into the appended portion of sum. Use a low-latency-low-throughput
 	// path for small digests (requiring a single compression), and a
 	// high-latency-high-throughput path for large digests.
-	if dst := sum[len(b):]; len(dst) <= guts.BlockSize {
-		out := guts.WordsToBytes(guts.CompressNode(h.rootNode()))
+	if dst := sum[len(b):]; len(dst) <= kernel.BlockSize {
+		out := kernel.WordsToBytes(kernel.CompressNode(h.rootNode()))
 		copy(dst, out[:])
 	} else {
 		// From offset 0 the read cannot reach the end of the stream, the
@@ -125,7 +125,7 @@ func (h *Hasher) Reset() {
 }
 
 // BlockSize implements hash.Hash.
-func (*Hasher) BlockSize() int { return guts.BlockSize }
+func (*Hasher) BlockSize() int { return kernel.BlockSize }
 
 // Size implements hash.Hash.
 func (h *Hasher) Size() int { return h.size }
@@ -146,7 +146,7 @@ func (h *Hasher) pushSubtree(cv [8]uint32, height int) {
 	// seek to first open stack slot, merging subtrees as we go
 	i := height
 	for h.hasSubtreeAtHeight(i) {
-		cv = guts.ChainingValue(guts.ParentNode(h.stack[i], cv, &h.key, h.flags))
+		cv = kernel.ChainingValue(kernel.ParentNode(h.stack[i], cv, &h.key, h.flags))
 		i++
 	}
 
@@ -157,15 +157,15 @@ func (h *Hasher) pushSubtree(cv [8]uint32, height int) {
 // rootNode computes the root of the Merkle tree: the buffered group's node,
 // a chunk or a parent, joined to the stack from the lowest occupied height
 // up. It does not modify the stack.
-func (h *Hasher) rootNode() guts.Node {
-	n := guts.CompressBuffer(&h.buf, h.buflen, &h.key, h.counter, h.flags)
+func (h *Hasher) rootNode() kernel.Node {
+	n := kernel.CompressBuffer(&h.buf, h.buflen, &h.key, h.counter, h.flags)
 	for i := bits.TrailingZeros64(h.counter); i < bits.Len64(h.counter); i++ {
 		if h.hasSubtreeAtHeight(i) {
-			n = guts.ParentNode(h.stack[i], guts.ChainingValue(n), &h.key, h.flags)
+			n = kernel.ParentNode(h.stack[i], kernel.ChainingValue(n), &h.key, h.flags)
 		}
 	}
 
-	n.Flags |= guts.FlagRoot
+	n.Flags |= kernel.FlagRoot
 
 	return n
 }
@@ -191,10 +191,10 @@ func (h *Hasher) compressTrees(flush bool, eigenbuf []byte) {
 
 	if flush {
 		trees = append(trees, groupHeight)
-		counter += guts.MaxSIMD
+		counter += kernel.MaxSIMD
 	}
 
-	trees = guts.AppendEigentrees(trees, counter, uint64(len(eigenbuf)/guts.ChunkSize))
+	trees = kernel.AppendEigentrees(trees, counter, uint64(len(eigenbuf)/kernel.ChunkSize))
 	if len(trees) == 0 {
 		return
 	}
@@ -204,18 +204,18 @@ func (h *Hasher) compressTrees(flush bool, eigenbuf []byte) {
 		total += len(h.buf)
 	}
 
-	if grain := guts.ParallelGrain(); len(trees) == 1 || total < grain+grain/2 {
+	if grain := kernel.ParallelGrain(); len(trees) == 1 || total < grain+grain/2 {
 		h.compressTreesSerial(flush, eigenbuf, trees)
 	} else {
 		h.compressTreesParallel(flush, eigenbuf, trees)
 	}
 }
 
-// groupHeight is the height of a tree of guts.MaxSIMD chunks, the held
+// groupHeight is the height of a tree of kernel.MaxSIMD chunks, the held
 // group's; the array below fails to compile when the constant drifts.
 const groupHeight = 4
 
-var _ [0]struct{} = [guts.MaxSIMD - 1<<groupHeight]struct{}{}
+var _ [0]struct{} = [kernel.MaxSIMD - 1<<groupHeight]struct{}{}
 
 // The held group goes through CompressBuffer, not CompressEigentree: the
 // latter's buffer reaches goroutines of its own for a large tree, and
@@ -224,17 +224,17 @@ func (h *Hasher) compressTreesSerial(flush bool, eigenbuf []byte, trees []int) {
 	counter := h.counter
 
 	for i, height := range trees {
-		var n guts.Node
+		var n kernel.Node
 
 		if flush && i == 0 {
-			n = guts.CompressBuffer(&h.buf, len(h.buf), &h.key, counter, h.flags)
+			n = kernel.CompressBuffer(&h.buf, len(h.buf), &h.key, counter, h.flags)
 		} else {
-			size := (1 << height) * guts.ChunkSize
-			n = guts.CompressEigentree(eigenbuf[:size], &h.key, counter, h.flags)
+			size := (1 << height) * kernel.ChunkSize
+			n = kernel.CompressEigentree(eigenbuf[:size], &h.key, counter, h.flags)
 			eigenbuf = eigenbuf[size:]
 		}
 
-		h.pushSubtree(guts.ChainingValue(n), height)
+		h.pushSubtree(kernel.ChainingValue(n), height)
 		counter += 1 << height
 	}
 }
@@ -264,9 +264,9 @@ func (h *Hasher) compressTreesParallel(flush bool, eigenbuf []byte, trees []int)
 
 			var heights [128]int
 
-			for i, height := range guts.AppendEigentrees(heights[:0], counter, uint64(len(buf)/guts.ChunkSize)) {
-				n := (1 << height) * guts.ChunkSize
-				cvs[idx+i] = guts.ChainingValue(guts.CompressEigentree(buf[:n], &key, counter, flags))
+			for i, height := range kernel.AppendEigentrees(heights[:0], counter, uint64(len(buf)/kernel.ChunkSize)) {
+				n := (1 << height) * kernel.ChunkSize
+				cvs[idx+i] = kernel.ChainingValue(kernel.CompressEigentree(buf[:n], &key, counter, flags))
 				buf = buf[n:]
 				counter += 1 << height
 			}
@@ -275,13 +275,13 @@ func (h *Hasher) compressTreesParallel(flush bool, eigenbuf []byte, trees []int)
 
 	first, counter := 0, h.counter
 	if flush {
-		first, counter = 1, counter+guts.MaxSIMD
+		first, counter = 1, counter+kernel.MaxSIMD
 	}
 
 	dealUnits(trees[first:], first, eigenbuf, counter, unit)
 
 	if flush {
-		cvs[0] = guts.ChainingValue(guts.CompressBuffer(&h.buf, len(h.buf), &h.key, h.counter, h.flags))
+		cvs[0] = kernel.ChainingValue(kernel.CompressBuffer(&h.buf, len(h.buf), &h.key, h.counter, h.flags))
 	}
 
 	wg.Wait()
@@ -297,9 +297,9 @@ func dealUnits(trees []int, idx int, eigenbuf []byte, counter uint64, unit func(
 	runStart, runBuf, runCounter := -1, eigenbuf, counter
 
 	for i, height := range trees {
-		n := (1 << height) * guts.ChunkSize
+		n := (1 << height) * kernel.ChunkSize
 
-		if 1<<height < guts.MaxSIMD {
+		if 1<<height < kernel.MaxSIMD {
 			if runStart < 0 {
 				runStart, runBuf, runCounter = i, eigenbuf, counter
 			}
@@ -339,7 +339,7 @@ func New(size int, key []byte) *Hasher {
 	}
 
 	if key == nil {
-		return newHasher(guts.IV, 0, size)
+		return newHasher(kernel.IV, 0, size)
 	}
 
 	if len(key) != 32 {
@@ -351,7 +351,7 @@ func New(size int, key []byte) *Hasher {
 		keyWords[i] = binary.LittleEndian.Uint32(key[i*4:])
 	}
 
-	return newHasher(keyWords, guts.FlagKeyedHash, size)
+	return newHasher(keyWords, kernel.FlagKeyedHash, size)
 }
 
 // Sum256 returns the unkeyed BLAKE3 hash of b, truncated to 256 bits.
@@ -364,29 +364,29 @@ func Sum256(b []byte) (out [32]byte) {
 
 // Sum512 returns the unkeyed BLAKE3 hash of b, truncated to 512 bits.
 func Sum512(b []byte) (out [64]byte) {
-	var n guts.Node
+	var n kernel.Node
 
 	switch {
-	case len(b) <= guts.BlockSize:
+	case len(b) <= kernel.BlockSize:
 		var block [64]byte
 		copy(block[:], b)
 
-		return guts.WordsToBytes(guts.CompressNode(guts.Node{
-			CV:       guts.IV,
-			Block:    guts.BytesToWords(block),
+		return kernel.WordsToBytes(kernel.CompressNode(kernel.Node{
+			CV:       kernel.IV,
+			Block:    kernel.BytesToWords(block),
 			BlockLen: uint32(len(b)), // #nosec G115 -- this case holds at most BlockSize bytes
-			Flags:    guts.FlagChunkStart | guts.FlagChunkEnd | guts.FlagRoot,
+			Flags:    kernel.FlagChunkStart | kernel.FlagChunkEnd | kernel.FlagRoot,
 		}))
-	case len(b) <= guts.ChunkSize:
-		n = guts.CompressChunk(b, &guts.IV, 0, 0)
-		n.Flags |= guts.FlagRoot
+	case len(b) <= kernel.ChunkSize:
+		n = kernel.CompressChunk(b, &kernel.IV, 0, 0)
+		n.Flags |= kernel.FlagRoot
 	default:
-		h := Hasher{key: guts.IV, size: len(out)}
+		h := Hasher{key: kernel.IV, size: len(out)}
 		h.Write(b)
 		n = h.rootNode()
 	}
 
-	return guts.WordsToBytes(guts.CompressNode(n))
+	return kernel.WordsToBytes(kernel.CompressNode(n))
 }
 
 // DeriveKey derives a subkey from ctx and srcKey. ctx should be hardcoded,
@@ -406,7 +406,7 @@ func DeriveKey(subKey []byte, ctx string, srcKey []byte) {
 
 	// Both hashers live on the stack: a Hasher is a group buffer and a
 	// stack, too much to allocate twice for one derivation.
-	h := Hasher{key: guts.IV, flags: guts.FlagDeriveKeyContext, size: derivationIVLen}
+	h := Hasher{key: kernel.IV, flags: kernel.FlagDeriveKeyContext, size: derivationIVLen}
 	h.Write([]byte(ctx))
 
 	var derivationIV [derivationIVLen]byte
@@ -418,7 +418,7 @@ func DeriveKey(subKey []byte, ctx string, srcKey []byte) {
 		ivWords[i] = binary.LittleEndian.Uint32(derivationIV[i*4:])
 	}
 
-	h = Hasher{key: ivWords, flags: guts.FlagDeriveKeyMaterial}
+	h = Hasher{key: ivWords, flags: kernel.FlagDeriveKeyMaterial}
 	// derive the subKey
 	h.Write(srcKey)
 	// From offset 0 the read cannot reach the end of the stream; see Sum.
@@ -437,7 +437,7 @@ const minParallelReadBytes = 16 * 1024
 
 // outputBufSize is the output an OutputReader compresses at once: one block
 // per SIMD lane.
-const outputBufSize = guts.MaxSIMD * guts.BlockSize
+const outputBufSize = kernel.MaxSIMD * kernel.BlockSize
 
 // An OutputReader produces a seekable stream of 2^64 - 1 pseudorandom output
 // bytes: the BLAKE3 extendable output of the state it was created from.
@@ -445,7 +445,7 @@ const outputBufSize = guts.MaxSIMD * guts.BlockSize
 // Like a Hasher it is not safe for concurrent use, and it holds no pointers,
 // so a copy continues independently from the same position.
 type OutputReader struct {
-	n        guts.Node
+	n        kernel.Node
 	buf      [outputBufSize]byte
 	bufStart uint64 // stream offset of buf[0]
 	buflen   int    // number of valid bytes in buf
@@ -476,14 +476,14 @@ func (or *OutputReader) Read(p []byte) (int, error) {
 			continue
 		}
 
-		if head := int(or.off % guts.BlockSize); head != 0 || len(p) < outputBufSize {
+		if head := int(or.off % kernel.BlockSize); head != 0 || len(p) < outputBufSize {
 			// the read is small or unaligned; compress (only) as many blocks
 			// as necessary into our buffer, and serve it from there
 			or.bufStart = or.off - uint64(head)
-			or.n.Counter = or.bufStart / guts.BlockSize
+			or.n.Counter = or.bufStart / kernel.BlockSize
 			need := min(head+len(p), outputBufSize)
-			numBlocks := (need + guts.BlockSize - 1) / guts.BlockSize
-			or.buflen = guts.BlockSize * guts.CompressBlocksN(&or.buf, or.n, numBlocks)
+			numBlocks := (need + kernel.BlockSize - 1) / kernel.BlockSize
+			or.buflen = kernel.BlockSize * kernel.CompressBlocksN(&or.buf, or.n, numBlocks)
 
 			continue
 		}
@@ -545,7 +545,7 @@ func (or *OutputReader) Seek(offset int64, whence int) (int64, error) {
 // boundary of the stream and holds at least outputBufSize bytes, and returns
 // what is left of p.
 func (or *OutputReader) readAligned(p []byte) []byte {
-	or.n.Counter = or.off / guts.BlockSize
+	or.n.Counter = or.off / kernel.BlockSize
 	numBufs := len(p) / outputBufSize
 
 	const minBufsPerCPU = minParallelReadBytes / outputBufSize
@@ -554,7 +554,7 @@ func (or *OutputReader) readAligned(p []byte) []byte {
 	// quota and the caller's setting included.
 	par := min(numBufs/minBufsPerCPU, runtime.GOMAXPROCS(0))
 	if par <= 1 {
-		guts.CompressBlocks((*[outputBufSize]byte)(p), or.n)
+		kernel.CompressBlocks((*[outputBufSize]byte)(p), or.n)
 		or.off += outputBufSize
 
 		return p[outputBufSize:]
@@ -570,18 +570,18 @@ func (or *OutputReader) readAligned(p []byte) []byte {
 		}
 
 		wg.Add(1)
-		go func(p []byte, n guts.Node, bufs uint64) {
+		go func(p []byte, n kernel.Node, bufs uint64) {
 			defer wg.Done()
 
 			for i := range bufs {
-				guts.CompressBlocks((*[outputBufSize]byte)(p[i*outputBufSize:]), n)
-				n.Counter += outputBufSize / guts.BlockSize
+				kernel.CompressBlocks((*[outputBufSize]byte)(p[i*outputBufSize:]), n)
+				n.Counter += outputBufSize / kernel.BlockSize
 			}
 		}(p, or.n, bufs)
 
 		p = p[bufs*outputBufSize:]
 		or.off += bufs * outputBufSize
-		or.n.Counter = or.off / guts.BlockSize
+		or.n.Counter = or.off / kernel.BlockSize
 	}
 
 	wg.Wait()

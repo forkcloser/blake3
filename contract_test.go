@@ -34,7 +34,7 @@ import (
 	"testing"
 
 	"github.com/forkcloser/blake3"
-	"github.com/forkcloser/blake3/guts"
+	"github.com/forkcloser/blake3/internal/kernel"
 	"github.com/forkcloser/blake3/internal/refimpl"
 )
 
@@ -180,17 +180,17 @@ func TestContractVectors(t *testing.T) {
 func TestContractHashHash(t *testing.T) {
 	t.Parallel()
 
-	in := cInput(3*guts.ChunkSize + 7)
+	in := cInput(3*kernel.ChunkSize + 7)
 	want := refimpl.Hash(in, 32)
-	wantHalf := refimpl.Hash(in[:guts.ChunkSize+1], 32)
+	wantHalf := refimpl.Hash(in[:kernel.ChunkSize+1], 32)
 
 	h := blake3.New(32, nil)
-	if h.Size() != 32 || h.BlockSize() != guts.BlockSize {
+	if h.Size() != 32 || h.BlockSize() != kernel.BlockSize {
 		t.Fatalf("Size %d, BlockSize %d", h.Size(), h.BlockSize())
 	}
 
-	n, err := h.Write(in[:guts.ChunkSize+1])
-	if n != guts.ChunkSize+1 || err != nil {
+	n, err := h.Write(in[:kernel.ChunkSize+1])
+	if n != kernel.ChunkSize+1 || err != nil {
 		t.Fatalf("Write = %d, %v", n, err)
 	}
 
@@ -207,8 +207,8 @@ func TestContractHashHash(t *testing.T) {
 	}
 
 	// the write after the Sums continues the same stream
-	n, err = h.Write(in[guts.ChunkSize+1:])
-	if n != len(in)-guts.ChunkSize-1 || err != nil {
+	n, err = h.Write(in[kernel.ChunkSize+1:])
+	if n != len(in)-kernel.ChunkSize-1 || err != nil {
 		t.Fatalf("Write = %d, %v", n, err)
 	}
 
@@ -253,21 +253,21 @@ func TestContractHashHash(t *testing.T) {
 func TestContractCopyForks(t *testing.T) {
 	t.Parallel()
 
-	in := cInput(5*guts.ChunkSize + 100)
+	in := cInput(5*kernel.ChunkSize + 100)
 
 	h := blake3.New(32, nil)
-	h.Write(in[:2*guts.ChunkSize+3])
+	h.Write(in[:2*kernel.ChunkSize+3])
 
 	fork := *h
 
-	h.Write(in[2*guts.ChunkSize+3:])
+	h.Write(in[2*kernel.ChunkSize+3:])
 	fork.Write([]byte("other"))
 
 	if got := h.Sum(nil); !bytes.Equal(got, refimpl.Hash(in, 32)) {
 		t.Fatalf("original after the fork wrote: %x", got)
 	}
 
-	other := append(bytes.Clone(in[:2*guts.ChunkSize+3]), "other"...)
+	other := append(bytes.Clone(in[:2*kernel.ChunkSize+3]), "other"...)
 	if got := fork.Sum(nil); !bytes.Equal(got, refimpl.Hash(other, 32)) {
 		t.Fatalf("fork after the original wrote: %x", got)
 	}
@@ -331,20 +331,20 @@ func TestContractNewPanics(t *testing.T) {
 func TestContractXOFCaptured(t *testing.T) {
 	t.Parallel()
 
-	in := cInput(2*guts.ChunkSize + 1)
+	in := cInput(2*kernel.ChunkSize + 1)
 
 	h := blake3.New(32, nil)
-	h.Write(in[:guts.ChunkSize])
+	h.Write(in[:kernel.ChunkSize])
 
 	xof := h.XOF()
-	h.Write(in[guts.ChunkSize:])
+	h.Write(in[kernel.ChunkSize:])
 
 	got := make([]byte, 64)
 	if _, err := io.ReadFull(xof, got); err != nil {
 		t.Fatal(err)
 	}
 
-	if !bytes.Equal(got, refimpl.Hash(in[:guts.ChunkSize], 64)) {
+	if !bytes.Equal(got, refimpl.Hash(in[:kernel.ChunkSize], 64)) {
 		t.Fatal("the XOF saw a write made after it was taken")
 	}
 }
@@ -526,18 +526,18 @@ func TestContractEigentreePrecondition(t *testing.T) {
 	panics := func(n int) (panicked bool) {
 		defer func() { panicked = recover() != nil }()
 
-		guts.CompressEigentree(make([]byte, n), &guts.IV, 0, 0)
+		kernel.CompressEigentree(make([]byte, n), &kernel.IV, 0, 0)
 
 		return false
 	}
 
-	for _, n := range []int{0, 1, 1500, 3 * guts.ChunkSize, 2*guts.ChunkSize + 1} {
+	for _, n := range []int{0, 1, 1500, 3 * kernel.ChunkSize, 2*kernel.ChunkSize + 1} {
 		if !panics(n) {
 			t.Errorf("CompressEigentree accepted %d bytes", n)
 		}
 	}
 
-	for _, n := range []int{guts.ChunkSize, 2 * guts.ChunkSize, 16 * guts.ChunkSize, 32 * guts.ChunkSize} {
+	for _, n := range []int{kernel.ChunkSize, 2 * kernel.ChunkSize, 16 * kernel.ChunkSize, 32 * kernel.ChunkSize} {
 		if panics(n) {
 			t.Errorf("CompressEigentree refused %d bytes", n)
 		}

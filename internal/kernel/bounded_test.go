@@ -1,4 +1,4 @@
-package guts_test
+package kernel_test
 
 // The bounded walk: every chunk length to a whole chunk, every chunk count to
 // a SIMD group with and without a partial last chunk, every counter and
@@ -10,7 +10,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/forkcloser/blake3/guts"
+	"github.com/forkcloser/blake3/internal/kernel"
 	"github.com/forkcloser/blake3/internal/refimpl"
 )
 
@@ -20,20 +20,21 @@ import (
 func TestBoundedCompressChunk(t *testing.T) {
 	t.Parallel()
 
-	data := testData(guts.ChunkSize)
+	data := testData(kernel.ChunkSize)
 
-	for n := range guts.ChunkSize + 1 {
+	for n := range kernel.ChunkSize + 1 {
 		for _, counter := range []uint64{0, 1, 1 << 32, math.MaxUint64 >> 1} {
-			for _, flags := range []uint32{0, guts.FlagKeyedHash} {
-				node := guts.CompressChunk(data[:n], &testKey, counter, flags)
+			for _, flags := range []uint32{0, kernel.FlagKeyedHash} {
+				node := kernel.CompressChunk(data[:n], &testKey, counter, flags)
 
-				if node.Flags&guts.FlagChunkEnd == 0 || (node.Flags&guts.FlagChunkStart != 0) != (n <= guts.BlockSize) {
+				if node.Flags&kernel.FlagChunkEnd == 0 ||
+					(node.Flags&kernel.FlagChunkStart != 0) != (n <= kernel.BlockSize) {
 					t.Fatalf("len %d: flags %#x", n, node.Flags)
 				}
 
-				wantLen := n % guts.BlockSize
+				wantLen := n % kernel.BlockSize
 				if wantLen == 0 && n > 0 {
-					wantLen = guts.BlockSize // a full last block
+					wantLen = kernel.BlockSize // a full last block
 				}
 
 				if node.Counter != counter || int(node.BlockLen) != wantLen {
@@ -43,7 +44,7 @@ func TestBoundedCompressChunk(t *testing.T) {
 				state := refimpl.ChunkState{Cv: testKey, Counter: counter, Flags: flags}
 				state.Update(data[:n])
 
-				if guts.ChainingValue(node) != state.Output().ChainingValue() {
+				if kernel.ChainingValue(node) != state.Output().ChainingValue() {
 					t.Fatalf(
 						"len %d, counter %d, flags %d: the chunk's output is not the specification's",
 						n,
@@ -59,26 +60,26 @@ func TestBoundedCompressChunk(t *testing.T) {
 // TestBoundedCompressBuffer: every chunk count 0..16, with and without a
 // partial last chunk, at several counters and flags, is the specification's
 // tree over those bytes. The odd counts, 3 to 15, are what nothing above
-// guts produces: the Hasher's trees are powers of two.
+// the Hasher produces: the Hasher's trees are powers of two.
 func TestBoundedCompressBuffer(t *testing.T) {
 	t.Parallel()
 
-	var buf [guts.MaxSIMD * guts.ChunkSize]byte
+	var buf [kernel.MaxSIMD * kernel.ChunkSize]byte
 	copy(buf[:], testData(len(buf)))
 
-	for chunks := range guts.MaxSIMD + 1 {
-		for _, extra := range []int{-1, 0, 1, guts.BlockSize, guts.ChunkSize - 1} {
-			n := chunks*guts.ChunkSize + extra
+	for chunks := range kernel.MaxSIMD + 1 {
+		for _, extra := range []int{-1, 0, 1, kernel.BlockSize, kernel.ChunkSize - 1} {
+			n := chunks*kernel.ChunkSize + extra
 			if n < 0 || n > len(buf) {
 				continue
 			}
 
 			for _, counter := range []uint64{0, 7, 1 << 32} {
-				for _, flags := range []uint32{0, guts.FlagKeyedHash} {
-					got := guts.CompressBuffer(&buf, n, &testKey, counter, flags)
+				for _, flags := range []uint32{0, kernel.FlagKeyedHash} {
+					got := kernel.CompressBuffer(&buf, n, &testKey, counter, flags)
 					want := refSubtree(buf[:n], testKey, counter, flags)
 
-					if guts.ChainingValue(got) != want.ChainingValue() {
+					if kernel.ChainingValue(got) != want.ChainingValue() {
 						t.Fatalf(
 							"%d bytes, counter %d, flags %d: CompressBuffer is not the specification's tree",
 							n,
@@ -100,7 +101,7 @@ func TestBoundedEigentrees(t *testing.T) {
 
 	for counter := range uint64(65) {
 		for chunks := range uint64(65) {
-			trees := guts.Eigentrees(counter, chunks)
+			trees := kernel.Eigentrees(counter, chunks)
 			at := counter
 
 			for i, height := range trees {
@@ -154,34 +155,34 @@ func TestBoundedEigentrees(t *testing.T) {
 func TestBoundedCompressBlocks(t *testing.T) {
 	t.Parallel()
 
-	node := guts.CompressChunk(testData(100), &guts.IV, 0, 0)
-	node.Flags |= guts.FlagRoot
+	node := kernel.CompressChunk(testData(100), &kernel.IV, 0, 0)
+	node.Flags |= kernel.FlagRoot
 
 	ref := refimpl.ChunkState{Cv: refimpl.IV}
 	ref.Update(testData(100))
 
 	stream := ref.Output()
 
-	for _, counter := range []uint64{0, 1, 15, 16, 1 << 32, math.MaxUint64/guts.BlockSize - guts.MaxSIMD} {
+	for _, counter := range []uint64{0, 1, 15, 16, 1 << 32, math.MaxUint64/kernel.BlockSize - kernel.MaxSIMD} {
 		node.Counter = counter
 
-		var out [guts.MaxSIMD * guts.BlockSize]byte
-		guts.CompressBlocks(&out, node)
+		var out [kernel.MaxSIMD * kernel.BlockSize]byte
+		kernel.CompressBlocks(&out, node)
 
-		want := stream.RootBytes(counter*guts.BlockSize, len(out))
+		want := stream.RootBytes(counter*kernel.BlockSize, len(out))
 		if !bytes.Equal(out[:], want) {
 			t.Fatalf("counter %d: CompressBlocks is not the stream", counter)
 		}
 
-		for numBlocks := 1; numBlocks <= guts.MaxSIMD; numBlocks++ {
-			var partial [guts.MaxSIMD * guts.BlockSize]byte
+		for numBlocks := 1; numBlocks <= kernel.MaxSIMD; numBlocks++ {
+			var partial [kernel.MaxSIMD * kernel.BlockSize]byte
 
-			got := guts.CompressBlocksN(&partial, node, numBlocks)
-			if got < numBlocks || got > guts.MaxSIMD {
+			got := kernel.CompressBlocksN(&partial, node, numBlocks)
+			if got < numBlocks || got > kernel.MaxSIMD {
 				t.Fatalf("counter %d: CompressBlocksN(%d) = %d", counter, numBlocks, got)
 			}
 
-			if !bytes.Equal(partial[:got*guts.BlockSize], want[:got*guts.BlockSize]) {
+			if !bytes.Equal(partial[:got*kernel.BlockSize], want[:got*kernel.BlockSize]) {
 				t.Fatalf("counter %d: CompressBlocksN(%d)'s %d blocks are not the stream", counter, numBlocks, got)
 			}
 		}

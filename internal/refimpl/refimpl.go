@@ -3,7 +3,7 @@
 // CC0): the plain chunk-by-chunk construction with no SIMD, no eigentrees,
 // no buffering beyond one chunk. It is the oracle the module's tests hold
 // the optimized code to, at every length and every output offset, and it
-// shares nothing with package guts.
+// shares nothing with package kernel.
 package refimpl
 
 import (

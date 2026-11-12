@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/forkcloser/blake3"
-	"github.com/forkcloser/blake3/guts"
+	"github.com/forkcloser/blake3/internal/kernel"
 )
 
 // FuzzWriteEquivalence is the fuzz form of TestEigentreeWriteEquivalence.
@@ -21,7 +21,7 @@ import (
 // data comes from a fixed pseudo-random buffer and the fuzzed bytes decide
 // only length and splits; a large input to the engine buys nothing.
 func FuzzWriteEquivalence(f *testing.F) {
-	const maxLen = 300 * guts.ChunkSize
+	const maxLen = 300 * kernel.ChunkSize
 
 	data := make([]byte, maxLen)
 	// LCG-filled: deterministic, cheap, no math/rand dependency in the seed.
@@ -33,10 +33,10 @@ func FuzzWriteEquivalence(f *testing.F) {
 
 	key := data[:32]
 
-	f.Add(uint32(64*guts.ChunkSize), []byte{})
-	f.Add(uint32(63*guts.ChunkSize+1), []byte{1, 2})
-	f.Add(uint32(200*guts.ChunkSize), []byte{7, 0, 15, 3})
-	f.Add(uint32(17*guts.ChunkSize+5), []byte{4, 4, 4, 4, 4, 4})
+	f.Add(uint32(64*kernel.ChunkSize), []byte{})
+	f.Add(uint32(63*kernel.ChunkSize+1), []byte{1, 2})
+	f.Add(uint32(200*kernel.ChunkSize), []byte{7, 0, 15, 3})
+	f.Add(uint32(17*kernel.ChunkSize+5), []byte{4, 4, 4, 4, 4, 4})
 
 	f.Fuzz(func(t *testing.T, length uint32, splits []byte) {
 		n := int(length % (maxLen + 1))
@@ -51,7 +51,7 @@ func FuzzWriteEquivalence(f *testing.F) {
 			ref := blake3.New(64, k)
 
 			for b := in; len(b) > 0; {
-				m := min(len(b), guts.ChunkSize)
+				m := min(len(b), kernel.ChunkSize)
 				ref.Write(b[:m])
 				b = b[m:]
 			}
@@ -71,7 +71,7 @@ func FuzzWriteEquivalence(f *testing.F) {
 					break
 				}
 
-				cut := (int(s) * guts.ChunkSize) / 16
+				cut := (int(s) * kernel.ChunkSize) / 16
 				if cut == 0 || cut >= len(rem) {
 					continue
 				}

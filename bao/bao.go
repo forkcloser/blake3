@@ -4,7 +4,7 @@
 // read. See https://github.com/oconnor663/bao for the format.
 //
 // Every function takes a group parameter that sets the chunk-group size as a
-// power of two: a group is guts.ChunkSize << group bytes, and standard Bao
+// power of two: a group is kernel.ChunkSize << group bytes, and standard Bao
 // uses 0. The parameter is validated at every entry point; a group outside
 // [0, MaxGroup] panics with a message that says so.
 package bao
@@ -17,7 +17,7 @@ import (
 	"io"
 	"math/bits"
 
-	"github.com/forkcloser/blake3/guts"
+	"github.com/forkcloser/blake3/internal/kernel"
 )
 
 // MaxGroup is the largest group any function in this package accepts. It
@@ -68,7 +68,7 @@ func cvToBytes(cv *[8]uint32) *[32]byte {
 	return &b
 }
 
-func compressGroup(p []byte, counter uint64) guts.Node {
+func compressGroup(p []byte, counter uint64) kernel.Node {
 	// stack size is log2(maximum number of buffers in a group), i.e.
 	// log2(2^64 bytes / ChunkSize / MaxSIMD) = 64 - 10 - 4
 	var (
@@ -79,7 +79,7 @@ func compressGroup(p []byte, counter uint64) guts.Node {
 	pushSubtree := func(cv [8]uint32) {
 		i := 0
 		for sc&(1<<i) != 0 {
-			cv = guts.ChainingValue(guts.ParentNode(stack[i], cv, &guts.IV, 0))
+			cv = kernel.ChainingValue(kernel.ParentNode(stack[i], cv, &kernel.IV, 0))
 			i++
 		}
 
@@ -88,12 +88,14 @@ func compressGroup(p []byte, counter uint64) guts.Node {
 	}
 
 	var (
-		buf    [guts.MaxSIMD * guts.ChunkSize]byte
+		buf    [kernel.MaxSIMD * kernel.ChunkSize]byte
 		buflen int
 	)
 	for len(p) > 0 {
 		if buflen == len(buf) {
-			pushSubtree(guts.ChainingValue(guts.CompressBuffer(&buf, buflen, &guts.IV, counter+(sc*guts.MaxSIMD), 0)))
+			pushSubtree(
+				kernel.ChainingValue(kernel.CompressBuffer(&buf, buflen, &kernel.IV, counter+(sc*kernel.MaxSIMD), 0)),
+			)
 			buflen = 0
 		}
 
@@ -102,10 +104,10 @@ func compressGroup(p []byte, counter uint64) guts.Node {
 		p = p[n:]
 	}
 
-	n := guts.CompressBuffer(&buf, buflen, &guts.IV, counter+(sc*guts.MaxSIMD), 0)
+	n := kernel.CompressBuffer(&buf, buflen, &kernel.IV, counter+(sc*kernel.MaxSIMD), 0)
 	for i := bits.TrailingZeros64(sc); i < bits.Len64(sc); i++ {
 		if sc&(1<<i) != 0 {
-			n = guts.ParentNode(stack[i], guts.ChainingValue(n), &guts.IV, 0)
+			n = kernel.ParentNode(stack[i], kernel.ChainingValue(n), &kernel.IV, 0)
 		}
 	}
 
@@ -121,7 +123,7 @@ func EncodedSize(dataLen, group int, outboard bool) int {
 		panic("bao: negative data length")
 	}
 
-	groupSize := guts.ChunkSize << group
+	groupSize := kernel.ChunkSize << group
 	size := headerSize
 
 	if dataLen > 0 {
@@ -155,7 +157,7 @@ func Encode(dst io.WriterAt, data io.Reader, dataLen int64, group int, outboard 
 		panic("bao: negative data length")
 	}
 
-	groupSize := uint64(guts.ChunkSize << group)
+	groupSize := uint64(kernel.ChunkSize << group)
 	enc := &encoder{
 		dst:       dst,
 		data:      data,
@@ -171,7 +173,7 @@ func Encode(dst io.WriterAt, data io.Reader, dataLen int64, group int, outboard 
 	// group > 0, so maybe just do that.
 	binary.LittleEndian.PutUint64(enc.buf[:headerSize], uint64(dataLen))
 	enc.write(enc.buf[:headerSize], 0)
-	_, root := enc.encode(uint64(dataLen), guts.FlagRoot, headerSize)
+	_, root := enc.encode(uint64(dataLen), kernel.FlagRoot, headerSize)
 
 	return *cvToBytes(&root), enc.err
 }
@@ -224,10 +226,10 @@ func (e *encoder) encode(bufLen uint64, flags uint32, off uint64) (uint64, [8]ui
 		}
 
 		n := compressGroup(g, e.counter)
-		e.counter += bufLen / guts.ChunkSize
+		e.counter += bufLen / kernel.ChunkSize
 		n.Flags |= flags
 
-		return 0, guts.ChainingValue(n)
+		return 0, kernel.ChainingValue(n)
 	}
 
 	mid := uint64(1) << (bits.Len64(bufLen-1) - 1)
@@ -246,7 +248,7 @@ func (e *encoder) encode(bufLen uint64, flags uint32, off uint64) (uint64, [8]ui
 
 	e.write(e.parentBuf[:], off)
 
-	return 2 + lchildren + rchildren, guts.ChainingValue(guts.ParentNode(l, r, &guts.IV, flags))
+	return 2 + lchildren + rchildren, kernel.ChainingValue(kernel.ParentNode(l, r, &kernel.IV, flags))
 }
 
 // Decode reads content and tree data from the provided reader(s), and
@@ -263,7 +265,7 @@ func Decode(dst io.Writer, data, outboard io.Reader, group int, root [32]byte) (
 		outboard = data
 	}
 
-	groupSize := uint64(guts.ChunkSize << group)
+	groupSize := uint64(kernel.ChunkSize << group)
 	buf := make([]byte, groupSize)
 
 	var err error
@@ -299,10 +301,10 @@ func Decode(dst io.Writer, data, outboard io.Reader, group int, root [32]byte) (
 			return false
 		} else if bufLen <= groupSize {
 			n := compressGroup(read(data, buf[:bufLen]), counter)
-			counter += bufLen / guts.ChunkSize
+			counter += bufLen / kernel.ChunkSize
 			n.Flags |= flags
 
-			valid := cv == guts.ChainingValue(n)
+			valid := cv == kernel.ChainingValue(n)
 			if valid {
 				write(dst, buf[:bufLen])
 			}
@@ -311,15 +313,15 @@ func Decode(dst io.Writer, data, outboard io.Reader, group int, root [32]byte) (
 		}
 
 		l, r := readParent()
-		n := guts.ParentNode(l, r, &guts.IV, flags)
+		n := kernel.ParentNode(l, r, &kernel.IV, flags)
 		mid := uint64(1) << (bits.Len64(bufLen-1) - 1)
 
-		return guts.ChainingValue(n) == cv && rec(l, mid, 0) && rec(r, bufLen-mid, 0)
+		return kernel.ChainingValue(n) == cv && rec(l, mid, 0) && rec(r, bufLen-mid, 0)
 	}
 
 	read(outboard, buf[:headerSize])
 	dataLen := binary.LittleEndian.Uint64(buf[:headerSize])
-	ok := rec(bytesToCV(root[:]), dataLen, guts.FlagRoot)
+	ok := rec(bytesToCV(root[:]), dataLen, kernel.FlagRoot)
 
 	return ok, err
 }
@@ -373,7 +375,7 @@ func ExtractSlice(dst io.Writer, data, outboard io.Reader, group int, offset, le
 		outboard = data
 	}
 
-	groupSize := uint64(guts.ChunkSize << group)
+	groupSize := uint64(kernel.ChunkSize << group)
 	ext := &extractor{
 		dst:              dst,
 		data:             data,
@@ -474,7 +476,7 @@ func (x *extractor) extract(pos, bufLen uint64) {
 // improve performance.
 func DecodeSlice(dst io.Writer, data io.Reader, group int, offset, length uint64, root [32]byte) (bool, error) {
 	checkGroup(group)
-	groupSize := uint64(guts.ChunkSize << group)
+	groupSize := uint64(kernel.ChunkSize << group)
 	dec := &sliceDecoder{
 		dst:       dst,
 		data:      data,
@@ -494,7 +496,7 @@ func DecodeSlice(dst io.Writer, data io.Reader, group int, offset, length uint64
 	}
 
 	dec.sliceOffset, dec.sliceLength = sliceBounds(offset, length, dataLen)
-	ok := dec.decode(bytesToCV(root[:]), 0, dataLen, guts.FlagRoot)
+	ok := dec.decode(bytesToCV(root[:]), 0, dataLen, kernel.FlagRoot)
 
 	return ok, dec.err
 }
@@ -550,10 +552,10 @@ func (d *sliceDecoder) decode(cv [8]uint32, pos, bufLen uint64, flags uint32) bo
 	}
 
 	l, r := d.readParent()
-	n := guts.ParentNode(l, r, &guts.IV, flags)
+	n := kernel.ParentNode(l, r, &kernel.IV, flags)
 	mid := uint64(1) << (bits.Len64(bufLen-1) - 1)
 
-	return guts.ChainingValue(n) == cv && d.decode(l, pos, mid, 0) && d.decode(r, pos+mid, bufLen-mid, 0)
+	return kernel.ChainingValue(n) == cv && d.decode(l, pos, mid, 0) && d.decode(r, pos+mid, bufLen-mid, 0)
 }
 
 // decodeGroup verifies the chunk group of bufLen bytes at pos against cv, and
@@ -565,17 +567,17 @@ func (d *sliceDecoder) decodeGroup(cv [8]uint32, pos, bufLen uint64, flags uint3
 		n := compressGroup(nil, 0)
 		n.Flags |= flags
 
-		return cv == guts.ChainingValue(n)
+		return cv == kernel.ChainingValue(n)
 	}
 
 	if !inSlice {
 		return true
 	}
 
-	n := compressGroup(d.read(bufLen), pos/guts.ChunkSize)
+	n := compressGroup(d.read(bufLen), pos/kernel.ChunkSize)
 	n.Flags |= flags
 
-	valid := cv == guts.ChainingValue(n)
+	valid := cv == kernel.ChainingValue(n)
 	if valid {
 		// only write within range
 		p := d.buf[:bufLen]
@@ -617,7 +619,7 @@ func VerifyChunk(chunks, outboard []byte, group int, offset uint64, root [32]byt
 	ver := &chunkVerifier{
 		chunks:    bytes.NewBuffer(chunks),
 		outboard:  bytes.NewBuffer(outboard),
-		groupSize: uint64(guts.ChunkSize << group),
+		groupSize: uint64(kernel.ChunkSize << group),
 		offset:    offset,
 		length:    uint64(len(chunks)),
 	}
@@ -636,7 +638,7 @@ func VerifyChunk(chunks, outboard []byte, group int, offset uint64, root [32]byt
 		return false
 	}
 
-	return ver.verify(bytesToCV(root[:]), 0, dataLen, guts.FlagRoot)
+	return ver.verify(bytesToCV(root[:]), 0, dataLen, kernel.FlagRoot)
 }
 
 // chunkVerifier is VerifyChunk's walk of the tree.
@@ -677,10 +679,10 @@ func (v *chunkVerifier) verify(cv [8]uint32, pos, bufLen uint64, flags uint32) b
 	}
 
 	l, r := bytesToCV(v.outboard.Next(cvSize)), bytesToCV(v.outboard.Next(cvSize))
-	n := guts.ParentNode(l, r, &guts.IV, flags)
+	n := kernel.ParentNode(l, r, &kernel.IV, flags)
 	mid := uint64(1) << (bits.Len64(bufLen-1) - 1)
 
-	return guts.ChainingValue(n) == cv && v.verify(l, pos, mid, 0) && v.verify(r, pos+mid, bufLen-mid, 0)
+	return kernel.ChainingValue(n) == cv && v.verify(l, pos, mid, 0) && v.verify(r, pos+mid, bufLen-mid, 0)
 }
 
 // verifyGroup verifies the chunk group of bufLen bytes at pos against cv.
@@ -691,7 +693,7 @@ func (v *chunkVerifier) verifyGroup(cv [8]uint32, pos, bufLen uint64, flags uint
 		n := compressGroup(nil, 0)
 		n.Flags |= flags
 
-		return cv == guts.ChainingValue(n)
+		return cv == kernel.ChainingValue(n)
 	}
 
 	if !inSlice {
@@ -699,8 +701,8 @@ func (v *chunkVerifier) verifyGroup(cv [8]uint32, pos, bufLen uint64, flags uint
 	}
 
 	// #nosec G115 -- groupSize is ChunkSize shifted by a checked group, a few megabytes at most
-	n := compressGroup(v.chunks.Next(int(v.groupSize)), pos/guts.ChunkSize)
+	n := compressGroup(v.chunks.Next(int(v.groupSize)), pos/kernel.ChunkSize)
 	n.Flags |= flags
 
-	return cv == guts.ChainingValue(n)
+	return cv == kernel.ChainingValue(n)
 }
