@@ -16,4 +16,5 @@ pins:
     verify: cms https://downloadmirror.intel.com/924984/sde-external-${version}-lin.tar.xz.sig ^CN=Intel\sCorporation,O=Intel\sCorporation, http://crt.sectigo.com/SectigoPublicCodeSigningRootR46.p7c 7e76260ae69a55d3f060b0fd18b2a8c01443c87b60791030c9fa0b0585101a38
     digest:
       version: 10.13.1-2026-07-28
+      source: a7c6be0212726bbd7afcaecd88b1a9d4b046365ae4b1db54fecfe832c4080438
       sha256: 94e97d623fec54385686e1e7ba65ebc9941748c05ee451423948334892bf2b50
