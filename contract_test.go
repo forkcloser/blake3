@@ -715,6 +715,60 @@ func TestContractMarshal(t *testing.T) {
 	}
 }
 
+// TestContractMarshalCounter: "a state that is not one of those is refused".
+// An input of 2^64-1 bytes, the most BLAKE3 hashes, is 2^54 chunks, the last
+// of them held back: a counter of 2^54 and above is no input's state, and
+// one restored would run the tree past its sixty-four levels. The states
+// are a plain Hasher's with the counter written in, a zero subtree for each
+// of its bits, and bytes held as a host of either width holds them.
+func TestContractMarshalCounter(t *testing.T) {
+	t.Parallel()
+
+	fresh, err := blake3.New().MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	crafted := func(counter uint64, held int) []byte {
+		b := binary.LittleEndian.AppendUint64(bytes.Clone(fresh[:4+4+32]), counter)
+		b = append(b, make([]byte, 32*bits.OnesCount64(counter))...)
+		b = binary.LittleEndian.AppendUint16(b, uint16(held))
+
+		return append(b, make([]byte, held)...)
+	}
+
+	const limit = 1 << 54
+
+	for _, counter := range []uint64{limit, limit + 1, 1 << 63, math.MaxUint64 - 15, math.MaxUint64} {
+		for _, held := range []int{1, kernel.ChunkSize, kernel.ChunkSize + 1, 5000, 16 * kernel.ChunkSize} {
+			h := blake3.New()
+			h.Write([]byte("abc"))
+
+			before := h.Sum(nil)
+
+			if h.UnmarshalBinary(crafted(counter, held)) == nil {
+				t.Errorf("UnmarshalBinary accepted a counter of %#x with %d bytes held", counter, held)
+			}
+
+			if got := h.Sum(nil); !bytes.Equal(got, before) {
+				t.Fatalf("a refused counter of %#x changed the Hasher", counter)
+			}
+		}
+	}
+
+	// The last counter an input can reach restores, and hashes on.
+	var h blake3.Hasher
+	if err := h.UnmarshalBinary(crafted(limit-1, 1)); err != nil {
+		t.Fatalf("UnmarshalBinary refused a counter of 2^54-1: %v", err)
+	}
+
+	h.Write(make([]byte, 3*kernel.ChunkSize))
+
+	if got := h.Sum(nil); len(got) != blake3.Size {
+		t.Fatalf("a Hasher restored at the last counter gave %d bytes", len(got))
+	}
+}
+
 // TestContractMarshalAcrossHosts: a state marshaled on a host of one kernel
 // width restores on a host of another. The wire form carries no width: a
 // narrow host's state stands at any chunk counter and holds under a chunk,
