@@ -31,6 +31,15 @@ lint-generated:
         echo "internal/kernel/compress_amd64.s does not match the output of avo/gen.go — run 'just gen'" >&2
         exit 1
     fi
+    # The dispatcher (internal/kernel/cpu.go) asks the CPU for the extensions
+    # the kernels need, and avo writes what each needs above it. A kernel
+    # that comes to need another one fails here until cpu.go asks for it and
+    # this list says so.
+    needs=$(sed -n 's|^// Requires: ||p' internal/kernel/compress_amd64.s | tr ',' '\n' | tr -d ' ' | sort -u | tr '\n' ' ')
+    if [ "$needs" != "AVX AVX2 AVX512BW AVX512F " ]; then
+        echo "the kernels require '$needs', not the extensions internal/kernel/cpu.go checks (AVX2; AVX512F and AVX512BW)" >&2
+        exit 1
+    fi
 
 [doc('Regenerate internal/kernel/compress_amd64.s from avo/gen.go')]
 gen:
@@ -153,7 +162,7 @@ test-isa isa:
 # host with AVX-512 the kernels then compute wrong trees at random, their
 # vector state lost under Pin across Go's preemption signals. Forced
 # emulation of the Skylake-X set, which holds every instruction the kernels
-# use (AVX-512F), keeps that state in the emulator on every host (the book's
+# use (AVX-512F and BW), keeps that state in the emulator on every host (the book's
 # upstream page). Pin, which SDE is built on, needs ptrace of its own child:
 # the workflow sets kernel.yama.ptrace_scope=0 before this runs.
 [doc('Run the kernel and root tests under Intel SDE emulating an AVX-512 CPU (linux/amd64 only)')]
@@ -184,6 +193,14 @@ test-avx512-emulated:
     BLAKE3_REQUIRE_ISA=avx512 build/sde/kit/sde64 -spr -force_emulate skx -- build/sde/kernel.test -test.v | tee build/sde/test.log
     grep -q '^--- PASS: TestRequiredISA' build/sde/test.log || {
         echo "test-avx512-emulated: the tests passed but TestRequiredISA did not run" >&2
+        exit 1
+    }
+    # The same CPU with AVX512BW taken away, which is a CPU no runner has:
+    # the dispatcher must then take the AVX2 kernels, since the AVX-512 ones
+    # use an AVX512BW instruction. TestRequiredISA fails when it does not.
+    GODEBUG=cpu.avx512bw=off BLAKE3_REQUIRE_ISA=avx2 build/sde/kit/sde64 -spr -force_emulate skx -- build/sde/kernel.test -test.v | tee build/sde/test-nobw.log
+    grep -q '^--- PASS: TestRequiredISA' build/sde/test-nobw.log || {
+        echo "test-avx512-emulated: without AVX512BW the tests passed but TestRequiredISA did not run" >&2
         exit 1
     }
     # The root package on the same emulated CPU, which the run above has
