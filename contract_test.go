@@ -19,7 +19,8 @@ package blake3_test
 //     end of the 2^64-1 byte stream, where it returns what remains and then
 //     0, io.EOF. Seek: before the start or past the end is an error that
 //     leaves the position alone; io.SeekEnd with 0 is the end, with -n the
-//     last n bytes; an unknown whence panics.
+//     last n bytes; an unknown whence is an error too, the position left
+//     where it was.
 //   - NewDeriveKey and DeriveKey: the specification's derive_key mode, any
 //     output length. OutputReader.ReadAt: the stream at any offset, the
 //     position untouched, concurrent calls allowed.
@@ -500,16 +501,26 @@ func TestContractXOFSeek(t *testing.T) {
 		t.Fatalf("Read at SeekEnd 0 = %d, %v; want 0, io.EOF", n, err)
 	}
 
-	// an unknown whence panics
-	func() {
-		defer func() {
-			if recover() == nil {
-				t.Error("Seek with whence 17 did not panic")
-			}
-		}()
+	// An unknown whence is refused, whatever the offset, and leaves the
+	// position alone: at 1012 here, where a position reset to the start, or
+	// moved to the offset, shows.
+	if _, err := xof.Seek(1012, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
 
-		_, _ = xof.Seek(0, 17)
-	}()
+	for _, whence := range []int{-1, 3, 17} {
+		for _, off := range []int64{0, 5, -5} {
+			if _, err := xof.Seek(off, whence); err == nil {
+				t.Errorf("Seek(%d, %d) was accepted", off, whence)
+			}
+
+			if pos, err := xof.Seek(0, io.SeekCurrent); err != nil || pos != 1012 {
+				t.Fatalf("Seek(%d, %d) left the position at %d, %v; want 1012", off, whence, pos, err)
+			}
+		}
+	}
+
+	readAt(1012)
 }
 
 // TestContractDeriveKey: any output length, the prefix property of the XOF,

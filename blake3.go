@@ -587,6 +587,9 @@ var (
 	errSeekPastEnd  = errors.New("blake3: position past the end of the stream")
 )
 
+// errSeekWhence is what Seek returns for a whence it does not know.
+var errSeekWhence = errors.New("blake3: Seek: invalid whence")
+
 // minParallelReadBytes is the least output one goroutine is handed when a
 // large, block-aligned Read is split across CPUs.
 const minParallelReadBytes = 16 * 1024
@@ -654,11 +657,12 @@ func (or *OutputReader) Read(p []byte) (int, error) {
 }
 
 // Seek implements io.Seeker. A position before the start of the stream or
-// past its end is rejected with an error and leaves the position unchanged;
-// io.SeekEnd with a zero offset positions at the end, where Read returns
-// io.EOF, and with -1 at the last byte. Positions of 2^63 and above are
-// valid but cannot be represented in the int64 return value, which is then
-// negative.
+// past its end, and a whence that is not one of io.SeekStart, io.SeekCurrent
+// and io.SeekEnd, are rejected with an error and leave the position
+// unchanged; io.SeekEnd with a zero offset positions at the end, where Read
+// returns io.EOF, and with -1 at the last byte. Positions of 2^63 and above
+// are valid but cannot be represented in the int64 return value, which is
+// then negative.
 func (or *OutputReader) Seek(offset int64, whence int) (int64, error) {
 	off := or.off
 
@@ -688,7 +692,7 @@ func (or *OutputReader) Seek(offset int64, whence int) (int64, error) {
 		// counting back from the end of the 2^64 - 1 byte stream.
 		off = uint64(offset) - 1
 	default:
-		panic("invalid whence")
+		return 0, errSeekWhence
 	}
 
 	or.off = off
