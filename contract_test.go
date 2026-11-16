@@ -36,10 +36,12 @@ import (
 	"math/bits"
 	"os"
 	"runtime"
+	"strconv"
 	"sync"
 	"testing"
 
 	"github.com/forkcloser/blake3/v2"
+	"github.com/forkcloser/blake3/v2/guts"
 	"github.com/forkcloser/blake3/v2/internal/kernel"
 	"github.com/forkcloser/blake3/v2/internal/refimpl"
 )
@@ -105,6 +107,18 @@ func fromHex(t *testing.T, s string) []byte {
 	}
 
 	return b
+}
+
+// marshal is h's state, as MarshalBinary gives it.
+func marshal(t *testing.T, h *blake3.Hasher) []byte {
+	t.Helper()
+
+	state, err := h.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return state
 }
 
 // TestContractVectors: the official cVectors, through every entry point that
@@ -311,6 +325,132 @@ func TestContractHashHash(t *testing.T) {
 	}
 }
 
+// TestContractReset: hash.Hash's "Reset resets the Hash to its initial
+// state", which for a keyed or a key-derivation Hasher is that mode under
+// that key, whatever was written before: nothing, less than a chunk, a
+// stack of subtrees with a tail held. A Hasher restored from a state resets
+// to the mode and key the state carried.
+func TestContractReset(t *testing.T) {
+	t.Parallel()
+
+	in := cInput(40*kernel.ChunkSize + 300)
+	after := []byte("abc")
+
+	for _, m := range modes() {
+		wantEmpty := m.ref().Finalize(0, 32)
+
+		ref := m.ref()
+		ref.Update(after)
+		want := ref.Finalize(0, 32)
+
+		fresh := marshal(t, m.new())
+
+		for _, n := range []int{0, 1, kernel.ChunkSize, 16*kernel.ChunkSize + 1, len(in)} {
+			constructed := m.new()
+			constructed.Write(in[:n])
+
+			var restored blake3.Hasher
+			if err := restored.UnmarshalBinary(marshal(t, constructed)); err != nil {
+				t.Fatalf("%s after %d bytes: UnmarshalBinary: %v", m.name, n, err)
+			}
+
+			for _, c := range []struct {
+				name string
+				h    *blake3.Hasher
+			}{{"constructed", constructed}, {"restored", &restored}} {
+				c.h.Reset()
+
+				if got := c.h.Sum(nil); !bytes.Equal(got, wantEmpty) {
+					t.Fatalf("%s, %s after %d bytes: Reset is not the mode's hash of nothing", m.name, c.name, n)
+				}
+
+				if got := marshal(t, c.h); !bytes.Equal(got, fresh) {
+					t.Fatalf("%s, %s after %d bytes: Reset is not the constructor's state", m.name, c.name, n)
+				}
+
+				c.h.Write(after)
+
+				if got := c.h.Sum(nil); !bytes.Equal(got, want) {
+					t.Fatalf("%s, %s after %d bytes: a write after Reset is not hashed in the mode", m.name, c.name, n)
+				}
+			}
+		}
+	}
+}
+
+// TestContractArguments: io.Writer's "Write must not modify the slice data,
+// even temporarily" and "must not retain p", where Write holds input back
+// and so has a reason to; and encoding.BinaryUnmarshaler's "UnmarshalBinary
+// must copy the data if it wishes to retain the data after returning". The
+// argument is the same after the call, and overwriting it afterwards
+// changes nothing of the Hasher: at lengths that are held whole, compressed
+// serially, and dealt out to goroutines.
+func TestContractArguments(t *testing.T) {
+	t.Parallel()
+
+	in := cInput(40*kernel.ChunkSize + 300)
+	rest := []byte("and the rest")
+
+	scribble := func(b []byte) {
+		for i := range b {
+			b[i] ^= 0xa5
+		}
+	}
+
+	const group = kernel.MaxSIMD * kernel.ChunkSize
+
+	for _, m := range modes() {
+		for _, n := range []int{1, kernel.ChunkSize, kernel.ChunkSize + 1, group, group + 1, len(in)} {
+			ref := m.ref()
+			ref.Update(in[:n])
+			want := ref.Finalize(0, 32)
+			ref.Update(rest)
+			wantRest := ref.Finalize(0, 32)
+
+			arg := bytes.Clone(in[:n])
+
+			h := m.new()
+			h.Write(arg)
+
+			if !bytes.Equal(arg, in[:n]) {
+				t.Fatalf("%s: Write changed its %d-byte argument", m.name, n)
+			}
+
+			scribble(arg)
+
+			if got := h.Sum(nil); !bytes.Equal(got, want) {
+				t.Fatalf("%s: overwriting Write's %d-byte argument after the call changed the digest", m.name, n)
+			}
+
+			state := marshal(t, h)
+			data := bytes.Clone(state)
+
+			var restored blake3.Hasher
+			if err := restored.UnmarshalBinary(data); err != nil {
+				t.Fatalf("%s at %d: UnmarshalBinary: %v", m.name, n, err)
+			}
+
+			if !bytes.Equal(data, state) {
+				t.Fatalf("%s at %d: UnmarshalBinary changed its argument", m.name, n)
+			}
+
+			scribble(data)
+
+			for name, c := range map[string]*blake3.Hasher{"written": h, "restored": &restored} {
+				if got := c.Sum(nil); !bytes.Equal(got, want) {
+					t.Fatalf("%s at %d: the %s Hasher follows its argument", m.name, n, name)
+				}
+
+				c.Write(rest)
+
+				if got := c.Sum(nil); !bytes.Equal(got, wantRest) {
+					t.Fatalf("%s at %d: the %s Hasher, continued, follows its argument", m.name, n, name)
+				}
+			}
+		}
+	}
+}
+
 // TestContractCopyForks: a Hasher and an OutputReader hold no pointers, so a
 // copy continues on its own.
 func TestContractCopyForks(t *testing.T) {
@@ -381,6 +521,104 @@ func TestContractXOFCaptured(t *testing.T) {
 
 	if !bytes.Equal(got, refimpl.Hash(in[:kernel.ChunkSize], 64)) {
 		t.Fatal("the XOF saw a write made after it was taken")
+	}
+}
+
+// TestContractXOFLeavesHasher: XOF captures the state and leaves the Hasher
+// as it was. In each mode the digest, the state and the writes that follow
+// are those of a Hasher XOF was never called on, and neither those writes
+// nor a Reset reach the reader.
+func TestContractXOFLeavesHasher(t *testing.T) {
+	t.Parallel()
+
+	in := cInput(18*kernel.ChunkSize + 9)
+
+	for _, m := range modes() {
+		for _, n := range []int{0, 5, kernel.ChunkSize, 17*kernel.ChunkSize + 1} {
+			ref := m.ref()
+			ref.Update(in[:n])
+			wantAt := ref.Finalize(0, 100)
+			ref.Update(in[n:])
+			want := ref.Finalize(0, 32)
+
+			h := m.new()
+			h.Write(in[:n])
+
+			untouched := *h
+			xof := h.XOF()
+
+			if got := h.Sum(nil); !bytes.Equal(got, wantAt[:32]) {
+				t.Fatalf("%s at %d: Sum after XOF is not the digest", m.name, n)
+			}
+
+			if !bytes.Equal(marshal(t, h), marshal(t, &untouched)) {
+				t.Fatalf("%s at %d: XOF changed the Hasher's state", m.name, n)
+			}
+
+			h.Write(in[n:])
+
+			if got := h.Sum(nil); !bytes.Equal(got, want) {
+				t.Fatalf("%s at %d: a write after XOF is not hashed as one before it", m.name, n)
+			}
+
+			h.Reset()
+
+			got := make([]byte, 100)
+			if _, err := io.ReadFull(xof, got); err != nil || !bytes.Equal(got, wantAt) {
+				t.Fatalf("%s at %d: the reader followed its Hasher: %v", m.name, n, err)
+			}
+		}
+	}
+}
+
+// TestContractXOFEmptyRead: io.Reader allows 0, nil for a Read of no bytes
+// and nowhere else, and a caller must not take it for the end of the
+// stream. Away from the end an empty Read is 0, nil, never io.EOF, and does
+// not move the position: at the start, inside a block, on a block and on a
+// buffer boundary, and with one byte left.
+func TestContractXOFEmptyRead(t *testing.T) {
+	t.Parallel()
+
+	ref := refimpl.New()
+
+	for _, seek := range []struct {
+		off    int64
+		whence int
+	}{
+		{0, io.SeekStart},
+		{1, io.SeekStart},
+		{kernel.BlockSize, io.SeekStart},
+		{100, io.SeekStart},
+		{16 * kernel.BlockSize, io.SeekStart},
+		{1 << 40, io.SeekStart},
+		{-1, io.SeekEnd},
+	} {
+		xof := blake3.New().XOF()
+
+		pos, err := xof.Seek(seek.off, seek.whence)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		at := uint64(pos)
+
+		// Before anything is read, and again with the output buffer filled.
+		for range 2 {
+			for _, empty := range [][]byte{nil, {}, make([]byte, 0, 8)} {
+				if n, err := xof.Read(empty); n != 0 || err != nil {
+					t.Fatalf("at %d: an empty Read = %d, %v; want 0, nil", at, n, err)
+				}
+			}
+
+			one := make([]byte, 1)
+			if n, err := xof.Read(one); n != 1 || err != nil || one[0] != ref.Finalize(at, 1)[0] {
+				t.Fatalf("at %d: the Read after the empty ones = %d, %v, and is not the stream there", at, n, err)
+			}
+
+			if _, err := xof.Seek(-1, io.SeekCurrent); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 }
 
@@ -587,6 +825,68 @@ func TestContractEigentreePrecondition(t *testing.T) {
 			t.Errorf("CompressEigentree refused %d bytes", n)
 		}
 	}
+}
+
+// TestContractCompressBufferCarry: guts.CompressBuffer compresses "up to
+// MaxSIMD chunks starting at counter", and the chunks count on from there
+// in 64 bits: a group whose counters cross a multiple of 2^32 carries into
+// the high word part-way through. A SIMD kernel adds each lane's index to
+// the low word and carries by hand, and a Hasher never takes one there, its
+// groups starting at multiples of sixteen. The carry at each place in a
+// group, on its last chunk and inside a full one, whole chunks and a
+// partial last one, plain and keyed, is the reference's tree of chunks
+// numbered one by one. The row is here, not with package guts' own, so that
+// it runs wherever this package's tests do: the AVX-512 kernel's carry is
+// reached only on a host that dispatches it.
+func TestContractCompressBufferCarry(t *testing.T) {
+	t.Parallel()
+
+	var buf [guts.MaxSIMD * guts.ChunkSize]byte
+	copy(buf[:], cInput(len(buf)))
+
+	key := guts.IV
+	key[3] ^= 0x5a5a5a5a
+
+	for back := uint64(1); back < guts.MaxSIMD; back++ {
+		for _, counter := range []uint64{1<<32 - back, 5<<32 - back} {
+			for _, chunks := range []int{int(back) + 1, guts.MaxSIMD} {
+				for _, n := range []int{chunks * guts.ChunkSize, chunks*guts.ChunkSize - 700} {
+					for _, flags := range []uint32{0, guts.FlagKeyedHash} {
+						got := guts.ChainingValue(guts.CompressBuffer(&buf, n, &key, counter, flags))
+
+						if want := refSubtree(buf[:n], key, counter, flags).ChainingValue(); got != want {
+							t.Fatalf("%d bytes from chunk %#x, flags %d: not the reference's tree", n, counter, flags)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// refSubtree is the specification's tree over data, whose first chunk is
+// number counter: the reference's chunk states, each given its own counter,
+// merged with the left subtree the largest power of two of chunks that
+// leaves the right one something.
+func refSubtree(data []byte, key [8]uint32, counter uint64, flags uint32) refimpl.Output {
+	if len(data) <= guts.ChunkSize {
+		state := refimpl.ChunkState{Cv: key, Counter: counter, Flags: flags}
+		state.Update(data)
+
+		return state.Output()
+	}
+
+	left := guts.ChunkSize
+	for 2*left < len(data) {
+		left *= 2
+	}
+
+	return refimpl.ParentOutput(
+		refSubtree(data[:left], key, counter, flags).ChainingValue(),
+		refSubtree(data[left:], key, counter+uint64(left/guts.ChunkSize), flags).ChainingValue(),
+		key,
+		flags,
+	)
 }
 
 // TestContractGOMAXPROCS: the digest and the output stream do not depend on
@@ -827,6 +1127,134 @@ func TestContractMarshalCounter(t *testing.T) {
 	}
 }
 
+// TestContractMarshalOver: UnmarshalBinary replaces everything its Hasher
+// was. Restored over a Hasher of each mode and key, with subtrees on its
+// stack and bytes held, a state is the Hasher it was taken from: the same
+// state again, the same digest, and the rest of the input hashed on, with
+// nothing of what the target held.
+func TestContractMarshalOver(t *testing.T) {
+	t.Parallel()
+
+	in := cInput(40*kernel.ChunkSize + 300)
+
+	other := make([]byte, 37*kernel.ChunkSize+5)
+	for i := range other {
+		other[i] = byte(i*13 + 1)
+	}
+
+	for _, src := range modes() {
+		ref := src.ref()
+		ref.Update(in)
+		want := ref.Finalize(0, 32)
+
+		for _, at := range []int{0, 1, kernel.ChunkSize + 1, 16*kernel.ChunkSize + 1, 33 * kernel.ChunkSize} {
+			h := src.new()
+			h.Write(in[:at])
+
+			wantAt := h.Sum(nil)
+			state := marshal(t, h)
+
+			for _, dst := range modes() {
+				for _, used := range []int{1, 3*kernel.ChunkSize + 700, 16 * kernel.ChunkSize, len(other)} {
+					target := dst.new()
+					target.Write(other[:used])
+
+					name := src.name + " at " + strconv.Itoa(at) + " over " + dst.name + " after " + strconv.Itoa(used)
+
+					if err := target.UnmarshalBinary(state); err != nil {
+						t.Fatalf("%s: UnmarshalBinary: %v", name, err)
+					}
+
+					if got := marshal(t, target); !bytes.Equal(got, state) {
+						t.Fatalf("%s: the state restored is not the state marshaled", name)
+					}
+
+					if got := target.Sum(nil); !bytes.Equal(got, wantAt) {
+						t.Fatalf("%s: the restored digest differs", name)
+					}
+
+					target.Write(in[at:])
+
+					if got := target.Sum(nil); !bytes.Equal(got, want) {
+						t.Fatalf("%s: continued after restore = %x, want %x", name, got[:8], want[:8])
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestContractMarshalSize: MarshalBinary's "at most 18 KiB", at the largest
+// state this host makes. A state is 50 bytes, 32 more for each subtree on
+// the stack, and the bytes held back. The stack is fullest just under 2^54
+// chunks, the longest input's count, which no test writes its way to: the
+// state is restored there, from the format, and written on until this host
+// holds all it ever does, a chunk with 54 subtrees in pure Go, a group of
+// sixteen with 50 under the SIMD kernels. Every state on the way is within
+// the bound, and the largest restores.
+func TestContractMarshalSize(t *testing.T) {
+	t.Parallel()
+
+	const (
+		bound = 18 << 10
+		empty = 4 + 4 + 32 + 8 + 2 // tag, flags, key, counter, held count
+		start = 1<<54 - kernel.MaxSIMD
+	)
+
+	fresh := marshal(t, blake3.New())
+	if len(fresh) != empty {
+		t.Fatalf("the state of a hash of nothing is %d bytes, want %d", len(fresh), empty)
+	}
+
+	// A counter a host of either width stands at, one byte held.
+	state := binary.LittleEndian.AppendUint64(bytes.Clone(fresh[:empty-8-2]), start)
+	state = append(state, make([]byte, 32*bits.OnesCount64(start))...)
+	state = append(binary.LittleEndian.AppendUint16(state, 1), 0)
+
+	var h blake3.Hasher
+	if err := h.UnmarshalBinary(state); err != nil {
+		t.Fatalf("premise: a state at 2^54-16 chunks is refused: %v", err)
+	}
+
+	// A group in all with the byte restored, in writes that end by turns
+	// inside a chunk and on its boundary; one byte more would complete a
+	// chunk past the last counter.
+	const half = kernel.ChunkSize / 2
+
+	largest := 0
+
+	for written := 1; written < kernel.MaxSIMD*kernel.ChunkSize; {
+		n := half - written%half
+		h.Write(make([]byte, n))
+		written += n
+
+		if state = marshal(t, &h); len(state) > bound {
+			t.Fatalf("%d bytes on: a state of %d bytes; the bound is %d", written, len(state), bound)
+		}
+
+		largest = max(largest, len(state))
+	}
+
+	// What this host holds at most, and the stack that goes with it.
+	want := empty + 32*54 + kernel.ChunkSize
+	if kernel.Width() > 1 {
+		want = empty + 32*50 + kernel.MaxSIMD*kernel.ChunkSize
+	}
+
+	if len(state) != want || largest != want {
+		t.Fatalf("the largest state is %d bytes, the last %d; want %d on this host", largest, len(state), want)
+	}
+
+	var restored blake3.Hasher
+	if err := restored.UnmarshalBinary(state); err != nil {
+		t.Fatalf("the largest state does not restore: %v", err)
+	}
+
+	if again := marshal(t, &restored); !bytes.Equal(again, state) {
+		t.Fatal("the largest state restored is not itself")
+	}
+}
+
 // TestContractMarshalAcrossHosts: a state marshaled on a host of one kernel
 // width restores on a host of another. The wire form carries no width: a
 // narrow host's state stands at any chunk counter and holds under a chunk,
@@ -908,6 +1336,36 @@ func TestContractMarshalAcrossHosts(t *testing.T) {
 
 		if got := h.Sum(nil); !bytes.Equal(got, refimpl.Hash(in[:tc.done], 32)) {
 			t.Fatalf("%s: digest of the restored state is not the reference's", tc.name)
+		}
+
+		// The same state continued in writes that each end on a chunk
+		// boundary, the first completing the chunk the state held. A wide
+		// host realigning a narrow state goes chunk by chunk, and the chunk
+		// a write completes is still the last: it waits for Sum, where it
+		// is the tree's right edge, and a state taken there holds it. The
+		// boundaries run past the next multiple of sixteen chunks, where
+		// the realignment ends.
+		aligned := h
+		at := tc.done
+
+		for end := at + kernel.ChunkSize - at%kernel.ChunkSize; end <= 33*kernel.ChunkSize; end += kernel.ChunkSize {
+			aligned.Write(in[at:end])
+			at = end
+
+			if got := aligned.Sum(nil); !bytes.Equal(got, refimpl.Hash(in[:end], 32)) {
+				t.Fatalf("%s: digest at a write ending at %d is not the reference's", tc.name, end)
+			}
+
+			var again blake3.Hasher
+			if err := again.UnmarshalBinary(marshal(t, &aligned)); err != nil {
+				t.Fatalf("%s: the state at a write ending at %d: %v", tc.name, end, err)
+			}
+
+			again.Write(in[end:])
+
+			if got := again.Sum(nil); !bytes.Equal(got, refimpl.Hash(in, 32)) {
+				t.Fatalf("%s: the state at a write ending at %d, continued, is not the reference's", tc.name, end)
+			}
 		}
 
 		// Continue in two writes, one small, so the realignment a wide host
