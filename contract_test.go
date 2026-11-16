@@ -43,13 +43,17 @@ import (
 	"github.com/forkcloser/blake3/v2/internal/refimpl"
 )
 
-// cVectors is testdata/vectors.json, the reference implementation's test
-// cVectors: for the first InputLen bytes of the counting input, 131 bytes
-// of hash, keyed hash under Key, and derived key under vectorsContext, the
-// context string the reference's test_vectors.json leaves implicit.
+// cVectors is testdata/vectors.json, the BLAKE3 team's test vectors as they
+// publish them (BLAKE3-team/BLAKE3, test_vectors/test_vectors.json at
+// ae3e8e6b3a5ae3190ca5d62820789b17886a0038): for the first InputLen bytes
+// of the counting input, 131 bytes of hash, keyed hash under Key, and
+// derived key under Context.
+//
+//nolint:tagliatelle // the reference file's field names
 type cVectors struct {
-	Key   string        `json:"key"`
-	Cases []cVectorCase `json:"cases"`
+	Key     string        `json:"key"`
+	Context string        `json:"context_string"`
+	Cases   []cVectorCase `json:"cases"`
 }
 
 //nolint:tagliatelle // the reference file's field names
@@ -59,8 +63,6 @@ type cVectorCase struct {
 	KeyedHash string `json:"keyed_hash"`
 	DeriveKey string `json:"derive_key"`
 }
-
-const vectorsContext = "BLAKE3 2019-12-27 16:29:52 test vectors context"
 
 func cLoadVectors(t *testing.T) cVectors {
 	t.Helper()
@@ -75,8 +77,9 @@ func cLoadVectors(t *testing.T) cVectors {
 		t.Fatal(err)
 	}
 
-	if len(vecs.Cases) == 0 || len(vecs.Key) != 32 || vectorsContext == "" {
-		t.Fatalf("cVectors.json: %d cases, key %q, context %q", len(vecs.Cases), vecs.Key, vectorsContext)
+	// The published file has 35 cases: a file with fewer is not it.
+	if len(vecs.Cases) != 35 || len(vecs.Key) != 32 || vecs.Context == "" {
+		t.Fatalf("vectors.json: %d cases, key %q, context %q", len(vecs.Cases), vecs.Key, vecs.Context)
 	}
 
 	return vecs
@@ -133,7 +136,7 @@ func TestContractVectors(t *testing.T) {
 			t.Fatalf("len %d: the reference port's keyed hash disagrees with the cVectors", vec.InputLen)
 		}
 
-		ref = refimpl.NewDeriveKey(vectorsContext)
+		ref = refimpl.NewDeriveKey(vecs.Context)
 		ref.Update(in)
 
 		if got := ref.Finalize(0, len(wantDerived)); !bytes.Equal(got, wantDerived) {
@@ -177,11 +180,11 @@ func TestContractVectors(t *testing.T) {
 			t.Errorf("len %d: Sum256Keyed = %x, want %x", vec.InputLen, got[:8], wantKeyed[:8])
 		}
 
-		if got := blake3.DeriveKey(vectorsContext, in, len(wantDerived)); !bytes.Equal(got, wantDerived) {
+		if got := blake3.DeriveKey(vecs.Context, in, len(wantDerived)); !bytes.Equal(got, wantDerived) {
 			t.Errorf("len %d: DeriveKey = %x, want %x", vec.InputLen, got[:8], wantDerived[:8])
 		}
 
-		h = blake3.NewDeriveKey(vectorsContext)
+		h = blake3.NewDeriveKey(vecs.Context)
 		h.Write(in)
 
 		if got := h.Sum(nil); !bytes.Equal(got, wantDerived[:32]) {

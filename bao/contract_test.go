@@ -54,7 +54,9 @@ func groupSize(group int) int { return 1024 << group }
 func TestContractReferenceEncoder(t *testing.T) {
 	t.Parallel()
 
-	data, err := os.ReadFile("../testdata/vectors.json")
+	// The content the two golden encodings are of: any bytes would do, and
+	// these are the ones the reference tool was run on.
+	data, err := os.ReadFile("../testdata/bao-golden.in")
 	if err != nil {
 		t.Fatal(err)
 	}
