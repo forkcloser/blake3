@@ -35,7 +35,7 @@ import (
 // the XOF's.
 const (
 	Size      = 32
-	BlockSize = kernel.BlockSize
+	BlockSize = kernel.BlockSize // 64
 )
 
 // Hasher implements hash.Hash. See the package documentation for its
@@ -52,7 +52,9 @@ type Hasher struct {
 	stack [64][8]uint32
 	// counter is the number of chunks compressed into the stack, and a bit
 	// vector of the heights it occupies. Write keeps it a multiple of
-	// kernel.MaxSIMD.
+	// kernel.Width(), which is 1 in pure Go: any count. Where the SIMD
+	// kernels run it is a multiple of kernel.MaxSIMD except in a state
+	// restored from a narrower host, until Write has realigned it.
 	counter uint64
 
 	// buf is the input not yet compressed: the tail, held back because the
@@ -205,17 +207,26 @@ func (h *Hasher) AppendBinary(b []byte) ([]byte, error) {
 }
 
 // MarshalBinary implements encoding.BinaryMarshaler: the state's wire form,
-// at most 18 KiB and a few dozen bytes for a hash of little. The state
-// carries the key, a keyed Hasher's or the one a derive-mode Hasher made of
-// its context, so it is as secret as the key: not to be stored or sent where
-// the key would not be.
+// 50 bytes for a hash of nothing, 32 more for each subtree in progress, and
+// the input held back; at most 18 KiB in all. The state carries the key, a
+// keyed Hasher's or the one a derive-mode Hasher made of its context, so it
+// is as secret as the key: not to be stored or sent where the key would not
+// be.
+//
+// The wire form opens with a tag that ends in the format's version.
+// UnmarshalBinary restores the version this release writes and refuses
+// every other: a state from a release with another version fails to
+// restore, and is never read as a different state.
 func (h *Hasher) MarshalBinary() ([]byte, error) {
 	return h.AppendBinary(nil)
 }
 
 // UnmarshalBinary implements encoding.BinaryUnmarshaler: it restores a state
-// MarshalBinary produced, on any host, and continues it. A state that is
-// not one of those is refused and h is left unchanged.
+// MarshalBinary produced, on any host, and continues it. A malformed state
+// is refused with an error and h is left unchanged. A well-formed one is
+// restored as it reads, and nothing authenticates it: the chaining values
+// and the key are taken on trust, so a state from a source that is not
+// trusted hashes what that source chose.
 func (h *Hasher) UnmarshalBinary(data []byte) error {
 	if len(data) < stateFixed+stateLenSize || string(data[:len(stateTag)]) != stateTag {
 		return errInvalidState
@@ -326,12 +337,11 @@ func (h *Hasher) rootNode() kernel.Node {
 // chaining values in tree order. A lone tree runs on the caller, fanning
 // out inside CompressEigentree when it is large; several go to goroutines
 // once they hold one and a half times the parallel grain between them, the
-// grain being what one goroutine is worth on the dispatched path. In pure
-// Go that is 24 KiB, measured against upstream's goroutine per tree on
-// darwin/arm64: below it the serial path won, by ~45% at 4 KiB writes and
-// ~7% at 16 KiB; from io.Copy's 32 KiB, which is 31 KiB of trees after the
-// held chunk, the dealing below won by 9–20%; and a 24 KiB write, which is
-// [16, 4, 2, 1] chunks, lost 13% to a goroutine for its 7-chunk tail.
+// grain being what one goroutine is worth on the dispatched path: from
+// 24 KiB of trees in pure Go, 192 KiB under the SIMD kernels. The half
+// grain on top is for the tail: at one grain a write of a group and a few
+// chunks, [16, 4, 2, 1], would wake a goroutine for the few, which costs
+// more than compressing them here.
 func (h *Hasher) compressTrees(flush bool, eigenbuf []byte) {
 	// A climb of at most 64 trees to an aligned counter, then a descent of
 	// at most 64: a fixed array, so the serial path allocates nothing.
@@ -442,7 +452,7 @@ func (h *Hasher) setDeriveKey(context string) {
 	c := Hasher{key: kernel.IV, flags: kernel.FlagDeriveKeyContext}
 	c.Write([]byte(context))
 
-	*h = Hasher{key: kernel.ChainingValue(withRoot(c.rootNode())), flags: kernel.FlagDeriveKeyMaterial}
+	*h = Hasher{key: kernel.ChainingValue(c.rootNode()), flags: kernel.FlagDeriveKeyMaterial}
 }
 
 // groupHeight is the height of a tree of kernel.MaxSIMD chunks, the held
@@ -485,13 +495,6 @@ func dealUnits(trees []int, idx int, eigenbuf []byte, counter uint64, unit func(
 	}
 }
 
-// withRoot is n with FlagRoot set, as rootNode returns it.
-func withRoot(n kernel.Node) kernel.Node {
-	n.Flags |= kernel.FlagRoot
-
-	return n
-}
-
 // keyWords is a key as the words the compression function takes.
 func keyWords(key [32]byte) (words [8]uint32) {
 	for i := range words {
@@ -516,6 +519,8 @@ func Sum512(b []byte) (out [64]byte) {
 
 	switch {
 	case len(b) <= kernel.BlockSize:
+		// What the next case computes, without CompressChunk: a block is
+		// one compression, and this is the faster way to it.
 		var block [64]byte
 		copy(block[:], b)
 
@@ -549,6 +554,7 @@ func Sum256Keyed(key [32]byte, b []byte) (out [32]byte) {
 
 // DeriveKey returns n bytes of key derived from material under context, as
 // NewDeriveKey describes; the first 32 are the digest, the rest the XOF's.
+// It panics if n is negative.
 func DeriveKey(context string, material []byte, n int) []byte {
 	var h Hasher
 
@@ -569,7 +575,9 @@ func DeriveKey(context string, material []byte, n int) []byte {
 // stack from the lowest up, and the bytes held back. Nothing in it names
 // the host's width: UnmarshalBinary feeds the held bytes through Write,
 // which holds back what this host does and realigns the counter when the
-// state came from a narrower one.
+// state came from a narrower one. The tag's last byte is the form's
+// version, and the only thing that tells one layout from another: a change
+// to the layout that keeps the byte lets an older state restore as garbage.
 const (
 	stateTag     = "b3h\x01"
 	stateFixed   = len(stateTag) + 4 + 32 + 8 // tag, flags, key, counter
@@ -699,8 +707,8 @@ func (or *OutputReader) Seek(offset int64, whence int) (int64, error) {
 	// NOTE: there is no need to update or invalidate the buffer: it caches an
 	// absolute range [bufStart, bufStart+buflen) of the stream, and Read only
 	// serves from it when or.off falls within that range.
-	// #nosec G115 -- positions past 2^63 - 1, reachable only through SeekEnd,
-	// do not fit io.Seeker's int64 and come back negative; the seek is exact.
+	// #nosec G115 -- positions past 2^63 - 1 do not fit io.Seeker's int64 and
+	// come back negative; the seek is exact.
 	return int64(or.off), nil
 }
 
@@ -718,12 +726,10 @@ func (or *OutputReader) ReadAt(p []byte, off int64) (int, error) {
 	r := *or
 	r.off = uint64(off)
 
-	n, err := r.Read(p)
-	if err == nil && n < len(p) {
-		err = io.EOF
-	}
-
-	return n, err
+	// Read returns a short count with a nil error across the end of the
+	// stream, which io.ReaderAt forbids and no call here reaches: off and
+	// len(p) are each under 2^63, the end at 2^64 - 1.
+	return r.Read(p)
 }
 
 // readAligned compresses output straight into p, which starts on a block

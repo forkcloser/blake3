@@ -143,8 +143,10 @@ func CompressBlocks(out *[MaxSIMD * BlockSize]byte, n Node) {
 // blocks computed, which may exceed numBlocks if doing so is cheap.
 func CompressBlocksN(out *[MaxSIMD * BlockSize]byte, n Node, numBlocks int) int {
 	if haveAVX512 || haveAVX2 {
-		// all MaxSIMD blocks are computed in (at most) two SIMD dispatches, so
-		// there is nothing to save by computing fewer
+		// CompressBlocks computes all MaxSIMD blocks whatever numBlocks is:
+		// in one dispatch under AVX-512, and in two of eight blocks under
+		// AVX2, where a request for eight or fewer pays for a second
+		// dispatch it has no use for.
 		CompressBlocks(out, n)
 		return MaxSIMD
 	}
@@ -184,7 +186,7 @@ func mergeSubtrees(cvs *[MaxSIMD][8]uint32, numCVs uint64, key *[8]uint32, flags
 	return ParentNode(cvs[0], cvs[1], key, flags)
 }
 
-// BytesToWords converts an array of 64 bytes to an array of 16 bytes.
+// BytesToWords converts an array of 64 bytes to an array of 16 words.
 func BytesToWords(bytes [64]byte) [16]uint32 {
 	// #nosec G103 -- the same bytes viewed as words; amd64 is little-endian
 	return *(*[16]uint32)(unsafe.Pointer(&bytes))

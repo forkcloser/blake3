@@ -5,12 +5,13 @@ package blake3_test
 //   - The BLAKE3 specification (BLAKE3-team/BLAKE3-specs) fixes what every
 //     digest, keyed digest, derived key and output stream byte is. The
 //     official cVectors (testdata/vectors.json) pin it at the lengths they
-//     cover; the specification's reference implementation (reference_test.go)
-//     is the oracle at every other length and output offset.
+//     cover; the specification's reference implementation, ported in
+//     internal/refimpl, is the oracle at every other length and output
+//     offset.
 //   - hash.Hash (Go's hash package): Write never returns an error here (the
 //     package doc says so); Sum appends the digest to its argument and does
 //     not change the state; Reset returns to the initial state; Size and
-//     BlockSize are the digest size asked for and 64.
+//     BlockSize are 32 and 64.
 //   - The package doc: a Hasher holds no pointers, so a copy forks its state,
 //     and MarshalBinary and UnmarshalBinary carry one across processes and
 //     hosts; the digest is 32 bytes, longer output is the XOF's.
@@ -800,9 +801,8 @@ func TestContractDeriveKey(t *testing.T) {
 }
 
 // TestContractEigentreePrecondition: a length that is not a power-of-two
-// number of whole chunks panics, a partial chunk included; before the check
-// covered it, 1500 bytes passed as one chunk and came back as a value that
-// is not BLAKE3.
+// number of whole chunks panics, a partial chunk included: 1500 bytes taken
+// for one chunk would come back as a value that is not BLAKE3's.
 func TestContractEigentreePrecondition(t *testing.T) {
 	t.Parallel()
 
@@ -928,6 +928,31 @@ func TestContractGOMAXPROCS(t *testing.T) { //nolint:paralleltest // sets GOMAXP
 
 		if !bytes.Equal(buf, wantXOF) {
 			t.Errorf("GOMAXPROCS=%d: XOF output differs from the reference", procs)
+		}
+	}
+}
+
+// TestContractWriteAllocs: the README's word on allocation, that a Write of
+// up to 24 KiB allocates nothing on any path, nor one of up to 32 KiB under
+// the SIMD kernels: on a Hasher that holds nothing and on one that holds
+// input. Not parallel: a parallel test's allocations would be counted with
+// this one's.
+func TestContractWriteAllocs(t *testing.T) { //nolint:paralleltest // AllocsPerRun counts the process's allocations
+	in := cInput(32 << 10)
+
+	sizes := []int{1, kernel.ChunkSize, 16 << 10, 24 << 10}
+	if kernel.Width() > 1 {
+		sizes = append(sizes, 32<<10)
+	}
+
+	for _, n := range sizes {
+		for _, held := range []int{0, 7} {
+			h := blake3.New()
+			h.Write(in[:held])
+
+			if allocs := testing.AllocsPerRun(20, func() { h.Write(in[:n]) }); allocs != 0 {
+				t.Errorf("a Write of %d bytes after %d allocates %v times a call", n, held, allocs)
+			}
 		}
 	}
 }
@@ -1073,7 +1098,7 @@ func TestContractMarshal(t *testing.T) {
 	}
 }
 
-// TestContractMarshalCounter: "a state that is not one of those is refused".
+// TestContractMarshalCounter: "a malformed state is refused".
 // An input of 2^64-1 bytes, the most BLAKE3 hashes, is 2^54 chunks, the last
 // of them held back: a counter of 2^54 and above is no input's state, and
 // one restored would run the tree past its sixty-four levels. The states

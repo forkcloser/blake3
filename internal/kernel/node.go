@@ -50,15 +50,11 @@ func Width() int {
 
 // ParallelGrain is the least input, in bytes, one goroutine is handed when a
 // tree is compressed in parallel: the pure-Go group's worth of work on the
-// dispatched path. In pure Go that is one MaxSIMD-chunk group, 15–19 µs
-// (15 on a Xeon 8370C at 1 MiB, 19 on an M5 Pro at a 16 KiB write; 32 KiB
-// per goroutine measured ~10% slower at 64 KiB and 128 KiB trees). Under
-// the SIMD kernels it is eight groups: on the 4-vCPU Xeon 8573C runner
-// where a pure-Go group is 32 µs, eight kernel groups are 33 µs under
-// AVX-512 and 50 under AVX2, and with two groups a grain every write from
-// 48 KiB to 128 KiB cost 6–25 µs more than its serial calls, the wake of
-// its goroutines, while 1 MiB alone gained. A caller spreading trees of
-// its own across goroutines should hand each at least this much.
+// dispatched path, some tens of microseconds, under which the wake of a
+// goroutine costs more than the work it takes away. In pure Go that is one
+// MaxSIMD-chunk group; under the SIMD kernels, which compress a group
+// several times faster, it is eight. A caller spreading trees of its own
+// across goroutines should hand each at least this much.
 func ParallelGrain() int {
 	if kernelsDispatched() {
 		return 8 * MaxSIMD * ChunkSize
@@ -156,13 +152,12 @@ func CompressEigentree(buf []byte, key *[8]uint32, counter uint64, flags uint32)
 func compressGroups(buf []byte, key *[8]uint32, counter uint64, flags uint32, groups uint64) Node {
 	// One CV per MaxSIMD-chunk group; the merge below is defined over
 	// these, so they are computed identically however the work is
-	// spread. Spreading it one group per goroutine was the mistake:
-	// waking a thread costs about what a group is worth (a 64 KiB tree
-	// spent ~95% of its time in the scheduler). Give each goroutine a
-	// run of groups worth at least
-	// ParallelGrain, and run the whole tree on the caller when it does
-	// not split at least two ways. The deal caps a tree at GOMAXPROCS
-	// goroutines (a 1 MiB tree spawned 64 before): what the scheduler
+	// spread. A goroutine gets a run of groups worth at least
+	// ParallelGrain, which under the SIMD kernels is several: waking a
+	// thread costs more than a kernel's group is worth, and a tree dealt
+	// out a group at a time spends its time in the scheduler. The whole
+	// tree runs on the caller when it does not split at least two ways.
+	// The deal caps a tree at GOMAXPROCS goroutines: what the scheduler
 	// will actually run on, a container's CPU quota and the caller's
 	// setting included, where NumCPU reports the machine.
 	cvs := make([][8]uint32, groups)

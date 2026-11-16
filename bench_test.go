@@ -11,9 +11,10 @@ import (
 // The guards: the package exists for speed on large inputs and outputs, and
 // a change that keeps every test green and halves the throughput shows here.
 // The benchmarks keep upstream's loop shape (a plain b.N loop, not b.Loop)
-// so that their numbers compare one to one with lukechampine/blake3 v1.4.1 on
-// the same host: b.Loop costs ~2 ns per iteration, which read as a 4% "loss"
-// on the 73 ns Sum256/64 case until the harnesses were made identical.
+// so that their numbers compare one to one with lukechampine/blake3's on the
+// same host: b.Loop costs a couple of nanoseconds an iteration, which on
+// Sum256/64 is several percent, and reads as a loss against a harness that
+// does not pay it.
 
 type nopReader struct{}
 
