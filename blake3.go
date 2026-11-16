@@ -246,10 +246,7 @@ func (h *Hasher) UnmarshalBinary(data []byte) error {
 	held := int(binary.LittleEndian.Uint16(rest))
 	rest = rest[stateLenSize:]
 
-	// Nothing but the bytes announced may follow, a counter past zero holds
-	// at least a byte back (the last chunk of the input is never compressed
-	// before Sum), and a group is the most any host holds.
-	if len(rest) != held || held > len(r.buf) || (counter > 0 && held == 0) {
+	if len(rest) != held || !anInputs(counter, held) {
 		return errInvalidState
 	}
 
@@ -258,6 +255,16 @@ func (h *Hasher) UnmarshalBinary(data []byte) error {
 	*h = r
 
 	return nil
+}
+
+// anInputs reports whether a counter and a count of bytes held with it are
+// some input's. A counter past zero holds at least a byte back (the last
+// chunk of the input is never compressed before Sum), and a group is the
+// most any host holds. An input of 2^64-1 bytes, the most BLAKE3 hashes, is
+// 2^54 chunks with the last held back: a counter at 2^54 or above is no
+// input's, and the tree it describes has more levels than the stack.
+func anInputs(counter uint64, held int) bool {
+	return held <= len(Hasher{}.buf) && (counter == 0 || held > 0) && counter < maxChunks
 }
 
 func (h *Hasher) hasSubtreeAtHeight(i int) bool {
@@ -548,6 +555,9 @@ const (
 )
 
 var errInvalidState = errors.New("blake3: invalid hash state")
+
+// maxChunks is the chunks of the longest input BLAKE3 hashes, 2^64-1 bytes.
+const maxChunks = 1 << 54
 
 // The errors Seek and ReadAt return for a position outside the stream.
 var (
