@@ -39,8 +39,12 @@ const (
 )
 
 // Hasher implements hash.Hash. See the package documentation for its
-// concurrency and copying rules.
+// concurrency and copying rules. The zero value is the plain hash, as New
+// returns it.
 type Hasher struct {
+	// key is the keyed mode's key or the derive mode's context key. The
+	// plain mode has none: its key is the IV, read through keyWords, so that
+	// the zero Hasher is the plain hash and not one under a key of zeros.
 	key   [8]uint32
 	flags uint32
 
@@ -64,7 +68,7 @@ type Hasher struct {
 
 // New returns an unkeyed Hasher.
 func New() *Hasher {
-	return &Hasher{key: kernel.IV}
+	return new(Hasher)
 }
 
 // NewKeyed returns a Hasher in BLAKE3's keyed mode: a MAC under key.
@@ -102,7 +106,10 @@ func (h *Hasher) Write(p []byte) (int, error) {
 		p = p[n:]
 
 		if h.buflen == kernel.ChunkSize && len(p) > 0 {
-			h.pushSubtree(kernel.ChainingValue(kernel.CompressChunk(h.buf[:h.buflen], &h.key, h.counter, h.flags)), 0)
+			h.pushSubtree(
+				kernel.ChainingValue(kernel.CompressChunk(h.buf[:h.buflen], h.keyWords(), h.counter, h.flags)),
+				0,
+			)
 
 			h.buflen = 0
 		}
@@ -128,7 +135,7 @@ func (h *Hasher) Write(p []byte) (int, error) {
 	// unit, full or partial, is held back in its turn.
 	flush := h.buflen == hold
 	if flush && hold == kernel.ChunkSize {
-		h.pushSubtree(kernel.ChainingValue(kernel.CompressChunk(h.buf[:hold], &h.key, h.counter, h.flags)), 0)
+		h.pushSubtree(kernel.ChainingValue(kernel.CompressChunk(h.buf[:hold], h.keyWords(), h.counter, h.flags)), 0)
 
 		flush = false
 	}
@@ -178,7 +185,7 @@ func (h *Hasher) AppendBinary(b []byte) ([]byte, error) {
 	b = append(b, stateTag...)
 	b = binary.LittleEndian.AppendUint32(b, h.flags)
 
-	for _, w := range h.key {
+	for _, w := range h.keyWords() {
 		b = binary.LittleEndian.AppendUint32(b, w)
 	}
 
@@ -246,7 +253,7 @@ func (h *Hasher) UnmarshalBinary(data []byte) error {
 	held := int(binary.LittleEndian.Uint16(rest))
 	rest = rest[stateLenSize:]
 
-	if len(rest) != held || !anInputs(counter, held) {
+	if len(rest) != held || !r.restorable(counter, held) {
 		return errInvalidState
 	}
 
@@ -257,14 +264,29 @@ func (h *Hasher) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
-// anInputs reports whether a counter and a count of bytes held with it are
-// some input's. A counter past zero holds at least a byte back (the last
-// chunk of the input is never compressed before Sum), and a group is the
-// most any host holds. An input of 2^64-1 bytes, the most BLAKE3 hashes, is
-// 2^54 chunks with the last held back: a counter at 2^54 or above is no
-// input's, and the tree it describes has more levels than the stack.
-func anInputs(counter uint64, held int) bool {
-	return held <= len(Hasher{}.buf) && (counter == 0 || held > 0) && counter < maxChunks
+// keyWords is the key every compression of h runs under.
+func (h *Hasher) keyWords() *[8]uint32 {
+	if h.flags == 0 {
+		return &kernel.IV
+	}
+
+	return &h.key
+}
+
+// restorable reports whether h's mode and key, with a counter and a count of
+// bytes held, are a state a Hasher can be in. The plain mode has no key of
+// its own, so its state carries the IV. A counter past zero holds at least
+// a byte back (the last chunk of the input is never compressed before Sum),
+// and a group is the most any host holds. An input of 2^64-1 bytes, the
+// most BLAKE3 hashes, is 2^54 chunks with the last held back: a counter at
+// 2^54 or above is no input's, and the tree it describes has more levels
+// than the stack.
+func (h *Hasher) restorable(counter uint64, held int) bool {
+	if h.flags == 0 && h.key != kernel.IV {
+		return false
+	}
+
+	return held <= len(h.buf) && (counter == 0 || held > 0) && counter < maxChunks
 }
 
 func (h *Hasher) hasSubtreeAtHeight(i int) bool {
@@ -275,7 +297,7 @@ func (h *Hasher) pushSubtree(cv [8]uint32, height int) {
 	// seek to first open stack slot, merging subtrees as we go
 	i := height
 	for h.hasSubtreeAtHeight(i) {
-		cv = kernel.ChainingValue(kernel.ParentNode(h.stack[i], cv, &h.key, h.flags))
+		cv = kernel.ChainingValue(kernel.ParentNode(h.stack[i], cv, h.keyWords(), h.flags))
 		i++
 	}
 
@@ -287,10 +309,10 @@ func (h *Hasher) pushSubtree(cv [8]uint32, height int) {
 // a chunk or a parent, joined to the stack from the lowest occupied height
 // up. It does not modify the stack.
 func (h *Hasher) rootNode() kernel.Node {
-	n := kernel.CompressBuffer(&h.buf, h.buflen, &h.key, h.counter, h.flags)
+	n := kernel.CompressBuffer(&h.buf, h.buflen, h.keyWords(), h.counter, h.flags)
 	for i := bits.TrailingZeros64(h.counter); i < bits.Len64(h.counter); i++ {
 		if h.hasSubtreeAtHeight(i) {
-			n = kernel.ParentNode(h.stack[i], kernel.ChainingValue(n), &h.key, h.flags)
+			n = kernel.ParentNode(h.stack[i], kernel.ChainingValue(n), h.keyWords(), h.flags)
 		}
 	}
 
@@ -350,10 +372,10 @@ func (h *Hasher) compressTreesSerial(flush bool, eigenbuf []byte, trees []int) {
 		var n kernel.Node
 
 		if flush && i == 0 {
-			n = kernel.CompressBuffer(&h.buf, len(h.buf), &h.key, counter, h.flags)
+			n = kernel.CompressBuffer(&h.buf, len(h.buf), h.keyWords(), counter, h.flags)
 		} else {
 			size := (1 << height) * kernel.ChunkSize
-			n = kernel.CompressEigentree(eigenbuf[:size], &h.key, counter, h.flags)
+			n = kernel.CompressEigentree(eigenbuf[:size], h.keyWords(), counter, h.flags)
 			eigenbuf = eigenbuf[size:]
 		}
 
@@ -393,7 +415,7 @@ func (h *Hasher) compressTreesParallel(flush bool, eigenbuf []byte, trees []int)
 				buf = buf[n:]
 				counter += 1 << height
 			}
-		}(idx, buf, counter, h.key, h.flags)
+		}(idx, buf, counter, *h.keyWords(), h.flags)
 	}
 
 	first, counter := 0, h.counter
@@ -404,7 +426,7 @@ func (h *Hasher) compressTreesParallel(flush bool, eigenbuf []byte, trees []int)
 	dealUnits(trees[first:], first, eigenbuf, counter, unit)
 
 	if flush {
-		cvs[0] = kernel.ChainingValue(kernel.CompressBuffer(&h.buf, len(h.buf), &h.key, h.counter, h.flags))
+		cvs[0] = kernel.ChainingValue(kernel.CompressBuffer(&h.buf, len(h.buf), h.keyWords(), h.counter, h.flags))
 	}
 
 	wg.Wait()
@@ -507,7 +529,7 @@ func Sum512(b []byte) (out [64]byte) {
 		n = kernel.CompressChunk(b, &kernel.IV, 0, 0)
 		n.Flags |= kernel.FlagRoot
 	default:
-		h := Hasher{key: kernel.IV}
+		var h Hasher
 		h.Write(b)
 		n = h.rootNode()
 	}
@@ -579,7 +601,8 @@ const outputBufSize = kernel.MaxSIMD * kernel.BlockSize
 //
 // Like a Hasher it is not safe for concurrent use, except that ReadAt calls
 // may run concurrently with one another, and it holds no pointers, so a copy
-// continues independently from the same position.
+// continues independently from the same position. An OutputReader comes
+// from Hasher.XOF: its zero value is no hash's output.
 type OutputReader struct {
 	n        kernel.Node
 	buf      [outputBufSize]byte

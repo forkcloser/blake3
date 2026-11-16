@@ -197,6 +197,49 @@ func TestContractVectors(t *testing.T) {
 	}
 }
 
+// TestContractZeroHasher: "the zero value is the plain hash, as New returns
+// it": written to, summed, read as an XOF, marshalled, reset, and as the
+// target of a restore, it is New's Hasher at every length.
+func TestContractZeroHasher(t *testing.T) {
+	t.Parallel()
+
+	in := cInput(40*kernel.ChunkSize + 300)
+
+	for _, n := range []int{0, 1, kernel.ChunkSize, kernel.ChunkSize + 1, 16*kernel.ChunkSize + 1, len(in)} {
+		want := refimpl.Hash(in[:n], 100)
+
+		var zero blake3.Hasher
+
+		zero.Write(in[:n])
+
+		if got := zero.Sum(nil); !bytes.Equal(got, want[:32]) {
+			t.Fatalf("%d bytes: the zero Hasher's digest is not BLAKE3's", n)
+		}
+
+		xof := make([]byte, 100)
+		if _, err := io.ReadFull(zero.XOF(), xof); err != nil || !bytes.Equal(xof, want) {
+			t.Fatalf("%d bytes: the zero Hasher's output is not BLAKE3's: %v", n, err)
+		}
+
+		fromNew := blake3.New()
+		fromNew.Write(in[:n])
+
+		zeroState, zerr := zero.MarshalBinary()
+		newState, nerr := fromNew.MarshalBinary()
+
+		if zerr != nil || nerr != nil || !bytes.Equal(zeroState, newState) {
+			t.Fatalf("%d bytes: the zero Hasher's state is not New's: %v, %v", n, zerr, nerr)
+		}
+
+		zero.Reset()
+		zero.Write([]byte("abc"))
+
+		if got := zero.Sum(nil); !bytes.Equal(got, refimpl.Hash([]byte("abc"), 32)) {
+			t.Fatalf("%d bytes: the zero Hasher after Reset is not the plain hash", n)
+		}
+	}
+}
+
 // TestContractHashHash: the hash.Hash rules. Write takes everything with a
 // nil error; Sum appends to its argument, leaves the state alone and may be
 // interleaved with Write; Reset is a fresh Hasher; Size and BlockSize are
@@ -655,13 +698,14 @@ func TestContractMarshal(t *testing.T) {
 	}
 
 	for name, bad := range map[string][]byte{
-		"empty":           {},
-		"short":           state[:20],
-		"tag":             append([]byte("x"), state[1:]...),
-		"flags":           append(append(bytes.Clone(state[:4]), 4, 0, 0, 0), state[8:]...), // FlagParent: no mode
-		"trailing byte":   append(bytes.Clone(state), 0),
-		"truncated held":  state[:len(state)-1],
-		"held past group": append(append(bytes.Clone(fresh[:len(fresh)-2]), 0xff, 0xff), make([]byte, 65535)...),
+		"empty":            {},
+		"short":            state[:20],
+		"tag":              append([]byte("x"), state[1:]...),
+		"flags":            append(append(bytes.Clone(state[:4]), 4, 0, 0, 0), state[8:]...), // FlagParent: no mode
+		"trailing byte":    append(bytes.Clone(state), 0),
+		"plain with a key": append(append(bytes.Clone(state[:8]), state[8]^1), state[9:]...), // the plain mode's is the IV
+		"truncated held":   state[:len(state)-1],
+		"held past group":  append(append(bytes.Clone(fresh[:len(fresh)-2]), 0xff, 0xff), make([]byte, 65535)...),
 	} {
 		if h.UnmarshalBinary(bad) == nil {
 			t.Errorf("UnmarshalBinary accepted a %s state", name)
