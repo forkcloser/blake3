@@ -257,8 +257,9 @@ BLAKE3 team's published test vectors, at the lengths they cover, and a port
 of the specification's reference implementation
 (`internal/refimpl`), at every length and output offset the bounded walks
 visit; Bao is held to its reference encoder, the Bao golden files and abao's
-chunk-group vectors. Four fuzz targets drive the kernels, the write scheduler
-and the Bao decoders, and the race detector runs the suite.
+chunk-group vectors. Five fuzz targets drive the kernels, the write scheduler,
+the restoring of a marshaled state and the Bao decoders, and the race detector
+runs the suite.
 
 Every dispatch arm runs on every CI run, and is asserted by name: the AVX-512
 kernels under Intel SDE's emulation, on a runner whose own CPU may lack them;
