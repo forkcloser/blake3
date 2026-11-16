@@ -1,14 +1,24 @@
 // Package bao implements BLAKE3 verified streaming: encodings that carry the
 // hash tree alongside (or, "outboard", apart from) the data, so that any
 // prefix or slice of the data can be verified against the root hash as it is
-// read. See https://github.com/oconnor663/bao for the format.
+// read. See https://github.com/oconnor663/bao for the format. Leaves of more
+// than one chunk, a Group above 0, are an extension to it, as in the abao
+// project; nothing in an encoding says which Group it was written with. It
+// is read with the same one: with another it does not verify, unless the
+// content is no longer than a leaf of the smaller of the two, when it is
+// one leaf and the same bytes under both.
 //
 // An [Encoding] value names the format's two parameters, the chunk-group
 // size and whether the tree is outboard, and every operation is a method on
-// it; its zero value is standard Bao. A verification that fails is
-// [ErrVerification]; an input that ends before its encoding does, with
-// io.EOF or an error wrapping it, is io.ErrUnexpectedEOF; any other error
-// is the reader's or the writer's own.
+// it; its zero value is standard Bao.
+//
+// A verification that fails is [ErrVerification]; a slice request that the
+// length an encoding declares cannot answer is [ErrSliceLength]; an input
+// that ends before its encoding does, with io.EOF or an error wrapping it,
+// is io.ErrUnexpectedEOF. Any other error of a reader is returned as the
+// reader reported it, and a writer's is wrapped. A writer that reports no
+// error but a count other than the bytes it was given is an error too:
+// io.ErrShortWrite, wrapped, when the count is short.
 package bao
 
 import (
@@ -17,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/bits"
 
 	"github.com/forkcloser/blake3/v2/internal/kernel"
@@ -34,24 +45,32 @@ type Encoding struct {
 	// Group is the chunk-group size as a power of two: a leaf is
 	// guts.ChunkSize << Group bytes. Standard Bao is 0; any value in
 	// [0, MaxGroup] is accepted, and another panics at the first method.
+	// Every method but EncodedSize and VerifyChunk holds one whole group in
+	// memory, however short its input: 1 GiB at MaxGroup.
 	Group int
 	// Outboard puts the tree in its own stream, apart from the data, rather
 	// than interleaved with it.
 	Outboard bool
 }
 
-// The errors this package returns of its own; every other one is a reader's
-// or a writer's, or io.ErrUnexpectedEOF for an input cut short.
+// The errors this package names. The others it returns are a reader's or a
+// writer's own, io.ErrUnexpectedEOF for an input cut short, and for a writer
+// that miscounts io.ErrShortWrite or an error with no name.
 var (
-	// ErrVerification is content that does not verify against the root:
-	// a chaining value or the final chunk that does not match, trailing
-	// bytes after a buffered encoding, or chunks presented for a range
-	// that holds none.
+	// ErrVerification is content that does not verify against the root: a
+	// parent node or a chunk group, any of them, that does not hash to the
+	// chaining value held for it. It is also what the in-memory verifiers
+	// make of an encoding too short to verify or with bytes left over
+	// (VerifyBuf, VerifySlice), and of chunks or a tree that do not fit
+	// the content (VerifyChunk, whose doc lists the cases).
 	ErrVerification = errors.New("bao: verification failed")
 	// ErrSliceLength is a slice request that does not fit the encoded
 	// data: its offset plus length overflows, or ends past the content
-	// length the encoding declares. The request is wrong for this
-	// encoding; nothing was read past the header.
+	// length the encoding declares. That length is the header's, which
+	// nothing has verified when the request is refused: the error says
+	// this encoding cannot answer the request, not that the content is
+	// shorter than the request. Nothing was read past the header, and
+	// nothing was written.
 	ErrSliceLength = errors.New("bao: slice does not fit the encoded data")
 )
 
@@ -84,8 +103,12 @@ func cvToBytes(cv *[8]uint32) *[32]byte {
 }
 
 func compressGroup(p []byte, counter uint64) kernel.Node {
-	// stack size is log2(maximum number of buffers in a group), i.e.
-	// log2(2^64 bytes / ChunkSize / MaxSIMD) = 64 - 10 - 4
+	// The stack holds one chaining value per bit of the count of buffers
+	// pushed. A group is at most ChunkSize << MaxGroup bytes, 2^16 buffers
+	// of MaxSIMD chunks with the last never pushed, so 16 entries are
+	// reachable. The array holds 50, what 2^64 bytes would take
+	// (64 - 10 - 4): room to spare, and not what bounds a group, which
+	// MaxGroup does.
 	var (
 		stack [50][8]uint32
 		sc    uint64
@@ -131,7 +154,9 @@ func compressGroup(p []byte, counter uint64) kernel.Node {
 
 // EncodedSize returns the size of the encoding of dataLen bytes of data:
 // the whole of it when the tree is interleaved, the tree alone when it is
-// outboard. It panics if dataLen is negative.
+// outboard. It panics if dataLen is negative, or if the size does not fit
+// an int64: a combined encoding's does not once data and tree together pass
+// math.MaxInt64 bytes, from about 7.5 EiB of data at Group 0.
 func (e Encoding) EncodedSize(dataLen int64) int64 {
 	groupSize := int64(e.groupSize()) // #nosec G115 -- at most 1 GiB
 
@@ -142,11 +167,24 @@ func (e Encoding) EncodedSize(dataLen int64) int64 {
 	size := int64(headerSize)
 
 	if dataLen > 0 {
-		leaves := (dataLen + groupSize - 1) / groupSize
+		// Counted by division: dataLen rounded up to a whole group first
+		// overflows when it is within a group of math.MaxInt64.
+		leaves := dataLen / groupSize
+		if dataLen%groupSize != 0 {
+			leaves++
+		}
+
 		size += (2*leaves - 2) * cvSize // a full binary tree: one parent fewer than leaves
 	}
 
 	if !e.Outboard {
+		// The tree alone is under 2^60 bytes whatever the length: it is the
+		// data beside it that an int64 may not hold, and the sum is checked
+		// before it is made, not after it has wrapped.
+		if dataLen > math.MaxInt64-size {
+			panic("bao: data length too large for a combined encoding")
+		}
+
 		size += dataLen
 	}
 
@@ -155,12 +193,20 @@ func (e Encoding) EncodedSize(dataLen int64) int64 {
 
 // Encode reads dataLen bytes of data and writes its encoding to dst: the
 // tree, and the data interleaved with it unless the Encoding is outboard.
-// It returns the tree's root, the BLAKE3 hash of the data.
+// It returns the tree's root, the BLAKE3 hash of the data, and the zero
+// root beside an error.
 //
-// dst is not written sequentially, so it must already hold room for the
-// whole encoding (EncodedSize). A negative dataLen is a programming error
-// and panics, as it does in EncodedSize, before anything is written. The
-// error is the destination's or the source's, as they report it.
+// dst is not written sequentially: a parent node is written after the
+// subtrees below it, at its offset before them. The writes fill the
+// encoding's EncodedSize bytes, each once, and nothing past them; whether
+// dst must hold that room beforehand is dst's own rule. A negative dataLen
+// is a programming error and panics, as it does in EncodedSize, before
+// anything is written.
+//
+// A source that fails is its own error, as it reports it, and one that
+// ends before dataLen bytes is io.ErrUnexpectedEOF. A destination that
+// fails is its error wrapped with the offset of the write, and so is
+// io.ErrShortWrite for a write it took less of than it was given.
 func (e Encoding) Encode(dst io.WriterAt, data io.Reader, dataLen int64) ([32]byte, error) {
 	groupSize := e.groupSize()
 
@@ -176,16 +222,22 @@ func (e Encoding) Encode(dst io.WriterAt, data io.Reader, dataLen int64) ([32]by
 		outboard:  e.Outboard,
 	}
 
-	// NOTE: unlike the reference implementation, we write directly in
-	// pre-order, rather than writing in post-order and then flipping. This cuts
-	// the I/O required in half, at the cost of making it a lot trickier to hash
-	// multiple groups in SIMD. However, you can still get the SIMD speedup if
-	// group > 0, so maybe just do that.
+	// Each node is written at its pre-order offset as soon as it is known,
+	// a parent after both its subtrees: one pass over the data, and the
+	// reason dst is an io.WriterAt. Groups are hashed one at a time, never
+	// two in one kernel call, so the kernels' sixteen chunks at once are
+	// filled only from Group 4 up.
 	binary.LittleEndian.PutUint64(enc.buf[:headerSize], uint64(dataLen))
 	enc.write(enc.buf[:headerSize], 0)
 	_, root := enc.encode(uint64(dataLen), kernel.FlagRoot, headerSize)
 
-	return *cvToBytes(&root), enc.err
+	if enc.err != nil {
+		// What the walk hashed around its error is the root of no data: a
+		// caller that drops the error must not be left holding it.
+		return [32]byte{}, enc.err
+	}
+
+	return *cvToBytes(&root), nil
 }
 
 // encoder is Encode's walk of the tree. Its first error stops the walk: every
@@ -215,6 +267,44 @@ func readFull(r io.Reader, p []byte) error {
 	return err //nolint:wrapcheck // the reader's own error, as the package promises it
 }
 
+// errWriteCount is a destination that reports, with no error, a count it
+// cannot have written: negative, or more than it was given.
+var errWriteCount = errors.New("bao: the destination reported an impossible write count")
+
+// writeFull writes the whole of p to w. io.Writer forbids a count short of
+// len(p) with no error, and a destination that returns one all the same has
+// dropped bytes: that is io.ErrShortWrite, as io.Copy has it. A write whose
+// count is not read here reports content as delivered that was not.
+func writeFull(w io.Writer, p []byte) error {
+	n, err := w.Write(p)
+
+	return writeResult(n, len(p), err)
+}
+
+// writeFullAt is writeFull for an io.WriterAt, at off.
+func writeFullAt(w io.WriterAt, p []byte, off int64) error {
+	n, err := w.WriteAt(p, off)
+
+	return writeResult(n, len(p), err)
+}
+
+// writeResult is the outcome of a write of want bytes as an error: the
+// destination's own when it reported one, whatever its count; otherwise
+// io.ErrShortWrite for a count below want, and errWriteCount for one that is
+// negative or above it.
+func writeResult(n, want int, err error) error {
+	switch {
+	case err != nil:
+		return err
+	case n < 0 || n > want:
+		return errWriteCount
+	case n < want:
+		return io.ErrShortWrite
+	default:
+		return nil
+	}
+}
+
 func (e *encoder) read(p []byte) []byte {
 	if e.err == nil {
 		e.err = readFull(e.data, p)
@@ -230,7 +320,7 @@ func (e *encoder) write(p []byte, off uint64) {
 
 	// #nosec G115 -- an offset inside the encoding of an int64-length input:
 	// past 2^63 only for exabyte inputs, where WriteAt refuses it.
-	if _, err := e.dst.WriteAt(p, int64(off)); err != nil {
+	if err := writeFullAt(e.dst, p, int64(off)); err != nil {
 		e.err = fmt.Errorf("bao: write the encoding at offset %d: %w", off, err)
 	}
 }
@@ -278,6 +368,9 @@ func (e *encoder) encode(bufLen uint64, flags uint32, off uint64) (uint64, [8]ui
 // verified content to dst. Content that does not verify against root is
 // ErrVerification, and nothing unverified is written; an encoding cut short
 // is io.ErrUnexpectedEOF, after the content that verified before the cut.
+// Decode reads to the encoding's end and no further: bytes that follow it,
+// in data or in tree, are left unread and are no error. VerifyBuf is the
+// one that refuses them.
 //
 // Decode reads the tree 64 bytes at a time, so if the readers are
 // unbuffered (e.g. os.File), wrapping them in a bufio.Reader will
@@ -301,7 +394,7 @@ func (e Encoding) Decode(dst io.Writer, data, tree io.Reader, root [32]byte) err
 			return
 		}
 
-		if _, err = w.Write(p); err != nil {
+		if err = writeFull(w, p); err != nil {
 			err = fmt.Errorf("bao: write verified data: %w", err)
 		}
 	}
@@ -381,8 +474,9 @@ func (e Encoding) EncodeBuf(data []byte) ([]byte, [32]byte) {
 
 // VerifyBuf verifies an encoding in memory against root: data holds the
 // whole encoding, or the content with the tree in tree when the Encoding is
-// outboard. Content that does not verify, an encoding too short to, or
-// bytes left over after it, is ErrVerification.
+// outboard (tree is ignored otherwise, as in Decode). Content that does not
+// verify, an encoding too short to, or bytes left over after it, in data or
+// in an outboard tree, is ErrVerification.
 func (e Encoding) VerifyBuf(data, tree []byte, root [32]byte) error {
 	d, o := bytes.NewBuffer(data), bytes.NewBuffer(tree)
 
@@ -392,7 +486,9 @@ func (e Encoding) VerifyBuf(data, tree []byte, root [32]byte) error {
 		return ErrVerification
 	}
 
-	if d.Len() != 0 || o.Len() != 0 {
+	// tree is part of the encoding only when it is outboard: Decode never
+	// reads it otherwise, and what it holds then is not bytes left over.
+	if d.Len() != 0 || e.Outboard && o.Len() != 0 {
 		return ErrVerification
 	}
 
@@ -401,9 +497,20 @@ func (e Encoding) VerifyBuf(data, tree []byte, root [32]byte) error {
 
 // ExtractSlice writes to dst the slice encoding for length bytes of content
 // from offset, read from an encoding: data and, when the Encoding is
-// outboard, the tree from tree. From an outboard encoding, data should hold
-// only the chunk groups the slice covers. A range past the content is
-// ErrSliceLength.
+// outboard, the tree from tree. It verifies nothing: an encoding that is
+// corrupt makes a slice that is, with no error, and it is DecodeSlice that
+// refuses the slice. A range past the length the encoding declares is
+// ErrSliceLength, and nothing is written to dst.
+//
+// ExtractSlice reads the encoding from its start to the end of the slice,
+// and no further. Of an outboard encoding that is the tree: data is read
+// for the chunk groups in the slice and for no others, so data must start
+// at offset rounded down to a whole group; for a zero length, at the group
+// of the byte at offset, or of the last byte when offset is the end. Data
+// that starts anywhere else, the whole content included when the slice
+// starts past its first group, makes a slice that does not verify, and no
+// error unless data then ends before the slice's groups are read, which is
+// io.ErrUnexpectedEOF.
 func (e Encoding) ExtractSlice(dst io.Writer, data, tree io.Reader, offset, length uint64) error {
 	groupSize := e.groupSize()
 	outboard := e.tree(data, tree)
@@ -417,7 +524,9 @@ func (e Encoding) ExtractSlice(dst io.Writer, data, tree io.Reader, offset, leng
 		length:           length,
 		combinedEncoding: !e.Outboard,
 	}
-	ext.transfer(outboard, headerSize, true)
+	// The header is read, held to the request, and only then written: a
+	// request that is refused leaves dst as it was.
+	ext.transfer(outboard, headerSize, false)
 
 	if ext.err != nil {
 		return ext.err
@@ -427,6 +536,8 @@ func (e Encoding) ExtractSlice(dst io.Writer, data, tree io.Reader, offset, leng
 	if end := offset + length; end < offset || dataLen < end {
 		return ErrSliceLength
 	}
+
+	ext.emit(headerSize)
 
 	ext.offset, ext.length = sliceBounds(offset, length, dataLen)
 	ext.extract(0, dataLen)
@@ -470,18 +581,29 @@ func (x *extractor) transfer(r io.Reader, n uint64, emit bool) {
 	}
 
 	x.err = readFull(r, x.buf[:n])
-	if x.err != nil || !emit {
+
+	if emit {
+		x.emit(n)
+	}
+}
+
+// emit writes to dst the n bytes transfer read last.
+func (x *extractor) emit(n uint64) {
+	if x.err != nil {
 		return
 	}
 
-	if _, err := x.dst.Write(x.buf[:n]); err != nil {
+	if err := writeFull(x.dst, x.buf[:n]); err != nil {
 		x.err = fmt.Errorf("bao: write the slice: %w", err)
 	}
 }
 
 func (x *extractor) extract(pos, bufLen uint64) {
 	inSlice := pos < (x.offset+x.length) && x.offset < (pos+bufLen)
-	if x.err != nil {
+	// A node that starts at or past the slice's end is not in it, and neither
+	// is any node after it in pre-order: the slice is whole, and what is
+	// left of the encoding stays unread.
+	if x.err != nil || pos >= x.offset+x.length {
 		return
 	} else if bufLen <= x.groupSize {
 		if x.combinedEncoding || inSlice {
@@ -500,8 +622,14 @@ func (x *extractor) extract(pos, bufLen uint64) {
 
 // DecodeSlice reads from slice, which must hold a slice encoding for length
 // bytes of content from offset (ExtractSlice), and streams the verified
-// content to dst. Content that does not verify against root is
-// ErrVerification; a range past the content is ErrSliceLength.
+// content to dst. A slice has one form, the tree interleaved, whatever the
+// Encoding's Outboard says. Content that does not verify against root is
+// ErrVerification.
+//
+// A range past the length the slice declares is ErrSliceLength. That length
+// is the slice's header, which nothing has verified when the request is
+// refused: the error says this slice cannot answer the request, not that
+// the content is shorter than the request.
 //
 // DecodeSlice reads the tree 64 bytes at a time, so if the reader is
 // unbuffered (e.g. os.File), wrapping it in a bufio.Reader will
@@ -565,7 +693,7 @@ func (d *sliceDecoder) write(p []byte) {
 		return
 	}
 
-	if _, err := d.dst.Write(p); err != nil {
+	if err := writeFull(d.dst, p); err != nil {
 		d.err = fmt.Errorf("bao: write verified data: %w", err)
 	}
 }
@@ -627,9 +755,13 @@ func (d *sliceDecoder) decodeGroup(cv [8]uint32, pos, bufLen uint64, flags uint3
 }
 
 // VerifySlice verifies a slice encoding in memory for length bytes of
-// content from offset, and returns the verified content. A slice that does
-// not verify against root, is too short to, or has bytes left over, is
-// ErrVerification; a range past the content is ErrSliceLength.
+// content from offset, and returns the verified content, whatever the
+// Encoding's Outboard says: a slice has one form. A slice that does not
+// verify against root, is too short to, or has bytes left over, is
+// ErrVerification. A range past the length the slice declares is
+// ErrSliceLength, on a length nothing has verified, as in DecodeSlice: the
+// slice cannot answer the request, which is not to say that the content is
+// shorter.
 func (e Encoding) VerifySlice(slice []byte, offset, length uint64, root [32]byte) ([]byte, error) {
 	d := bytes.NewBuffer(slice)
 
@@ -740,7 +872,7 @@ func (v *chunkVerifier) verifyGroup(cv [8]uint32, pos, bufLen uint64, flags uint
 		return true
 	}
 
-	// #nosec G115 -- groupSize is ChunkSize shifted by a checked group, a few megabytes at most
+	// #nosec G115 -- groupSize is ChunkSize shifted by a checked group: at most 1 GiB, which fits an int
 	n := compressGroup(v.chunks.Next(int(v.groupSize)), pos/kernel.ChunkSize)
 	n.Flags |= flags
 

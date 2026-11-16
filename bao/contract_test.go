@@ -562,3 +562,372 @@ func TestContractDecoderWritesVerifiedOnly(t *testing.T) {
 		t.Fatalf("VerifyChunk does not hold the empty encoding to its root: %v", err)
 	}
 }
+
+// TestContractSliceEveryByte: "a decoder writes nothing it has not
+// verified", and to DecodeSlice "content that does not verify against root is
+// ErrVerification". Every byte of a slice that spans several groups is
+// flipped in turn, parent nodes and chunk groups alike: the slice is refused,
+// and what reached the writer is a start of the bytes asked for. The header
+// is the one exception, and a bounded one: its length is declared, not
+// verified, so a flip there that changes no node the request reads is
+// accepted, with exactly the bytes asked for.
+func TestContractSliceEveryByte(t *testing.T) {
+	t.Parallel()
+
+	const offset, length = 1500, 2600
+
+	data := cData(t, 5*1024+300)
+	want := data[offset : offset+length]
+
+	for _, group := range []int{0, 1} {
+		format := bao.Encoding{Group: group}
+		enc, root := format.EncodeBuf(data)
+
+		var slice bytes.Buffer
+		if err := format.ExtractSlice(&slice, bytes.NewReader(enc), nil, offset, length); err != nil {
+			t.Fatal(err)
+		}
+
+		for i := range slice.Bytes() {
+			bad := bytes.Clone(slice.Bytes())
+			bad[i] ^= 1
+
+			var out bytes.Buffer
+
+			err := format.DecodeSlice(&out, bytes.NewReader(bad), offset, length, root)
+
+			switch {
+			case !bytes.HasPrefix(want, out.Bytes()):
+				t.Fatalf("group %d, slice byte %d flipped: %d unverified bytes written", group, i, out.Len())
+			case err == nil && out.Len() != len(want):
+				t.Fatalf("group %d, slice byte %d flipped: accepted with %d bytes of %d", group, i, out.Len(), length)
+			case i >= refHeader && !errors.Is(err, bao.ErrVerification):
+				t.Fatalf("group %d, slice byte %d flipped: %v, want ErrVerification", group, i, err)
+			}
+		}
+	}
+}
+
+// TestContractVerifyChunkRoot: "VerifyChunk verifies chunks, whole chunk
+// groups of content starting at offset, against root with the full outboard
+// tree in tree". The tree vouches for the chunks and nothing but the root
+// vouches for the tree: each group of a content of several is refused with
+// its own tree against another root, and so are another content's group and
+// tree, which agree with each other, against this content's root.
+func TestContractVerifyChunkRoot(t *testing.T) {
+	t.Parallel()
+
+	data := cData(t, 2*(5*1024+300))
+	data, other := data[:len(data)/2], data[len(data)/2:]
+
+	for _, group := range []int{0, 1} {
+		format := bao.Encoding{Group: group}
+		tree, root := (bao.Encoding{Group: group, Outboard: true}).EncodeBuf(data)
+		otherTree, _ := (bao.Encoding{Group: group, Outboard: true}).EncodeBuf(other)
+		wrong := root
+		wrong[0] ^= 1
+
+		for off := 0; off < len(data); off += groupSize(group) {
+			end := min(off+groupSize(group), len(data))
+
+			if err := format.VerifyChunk(data[off:end], tree, uint64(off), root); err != nil {
+				t.Fatalf("group %d, offset %d: VerifyChunk refused: %v", group, off, err)
+			}
+
+			err := format.VerifyChunk(data[off:end], tree, uint64(off), wrong)
+			if !errors.Is(err, bao.ErrVerification) {
+				t.Fatalf("group %d, offset %d: another root: %v, want ErrVerification", group, off, err)
+			}
+
+			err = format.VerifyChunk(other[off:end], otherTree, uint64(off), root)
+			if !errors.Is(err, bao.ErrVerification) {
+				t.Fatalf("group %d, offset %d: a forged group and tree: %v, want ErrVerification", group, off, err)
+			}
+		}
+	}
+}
+
+// countingReader counts the bytes read through it.
+type countingReader struct {
+	r io.Reader
+	n int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += n
+
+	return n, err
+}
+
+// TestContractExtractSliceReads: ExtractSlice "reads the encoding from its
+// start to the end of the slice, and no further". The slice for the first
+// byte of a large content is the start of its encoding, the tree's left edge
+// and one group: as many bytes are read, from data and tree together, as the
+// slice holds, however much content follows.
+func TestContractExtractSliceReads(t *testing.T) {
+	t.Parallel()
+
+	data := cData(t, 1<<20)
+
+	for _, test := range []struct {
+		name   string
+		format bao.Encoding
+	}{
+		{"combined", bao.Encoding{}},
+		{"outboard", bao.Encoding{Outboard: true}},
+		{"combined, group 2", bao.Encoding{Group: 2}},
+		{"outboard, group 2", bao.Encoding{Group: 2, Outboard: true}},
+	} {
+		enc, root := test.format.EncodeBuf(data)
+
+		// Combined, the encoding is the data reader and the tree reader is
+		// ignored; outboard, the content and the tree each have their own.
+		content, tree := &countingReader{r: bytes.NewReader(enc)}, &countingReader{r: bytes.NewReader(nil)}
+
+		if test.format.Outboard {
+			content.r, tree.r = bytes.NewReader(data), bytes.NewReader(enc)
+		}
+
+		var slice bytes.Buffer
+		if err := test.format.ExtractSlice(&slice, content, tree, 0, 1); err != nil {
+			t.Fatalf("%s: %v", test.name, err)
+		}
+
+		if out, err := test.format.VerifySlice(slice.Bytes(), 0, 1, root); err != nil || !bytes.Equal(out, data[:1]) {
+			t.Fatalf("%s: the slice does not verify: %d bytes, %v", test.name, len(out), err)
+		}
+
+		if read := content.n + tree.n; read != slice.Len() {
+			t.Errorf("%s: read %d bytes (%d of content, %d of tree) for a slice of %d",
+				test.name, read, content.n, tree.n, slice.Len())
+		}
+	}
+}
+
+// TestContractExtractSliceRefused: "A range past the length the encoding
+// declares is ErrSliceLength, and nothing is written to dst": not the header
+// either, though it is read before the request can be judged.
+func TestContractExtractSliceRefused(t *testing.T) {
+	t.Parallel()
+
+	data := cData(t, 4096)
+
+	for _, format := range []bao.Encoding{{}, {Outboard: true}} {
+		enc, _ := format.EncodeBuf(data)
+
+		for _, test := range []struct{ off, len uint64 }{
+			{0, 4097}, {4096, 1}, {4097, 0}, {1 << 63, 1<<63 + 10}, {math.MaxUint64, math.MaxUint64},
+		} {
+			content := enc
+
+			if format.Outboard {
+				content = data
+			}
+
+			var dst bytes.Buffer
+
+			err := format.ExtractSlice(&dst, bytes.NewReader(content), bytes.NewReader(enc), test.off, test.len)
+			if !errors.Is(err, bao.ErrSliceLength) || dst.Len() != 0 {
+				t.Errorf("outboard %t, (%d, %d): %v with %d bytes written, want ErrSliceLength and none",
+					format.Outboard, test.off, test.len, err, dst.Len())
+			}
+		}
+	}
+}
+
+// TestContractVerifyBufTree: to VerifyBuf "tree is ignored otherwise, as in
+// Decode", otherwise being a combined Encoding: its encoding verifies
+// whatever tree holds, and the bytes left over that refuse it are data's.
+func TestContractVerifyBufTree(t *testing.T) {
+	t.Parallel()
+
+	data := cData(t, 3*1024+100)
+	enc, root := (bao.Encoding{}).EncodeBuf(data)
+	obd, _ := (bao.Encoding{Outboard: true}).EncodeBuf(data)
+
+	for _, tree := range [][]byte{{1, 2, 3}, obd, enc} {
+		if err := (bao.Encoding{}).Decode(io.Discard, bytes.NewReader(enc), bytes.NewReader(tree), root); err != nil {
+			t.Errorf("Decode of a combined encoding beside %d bytes of tree: %v", len(tree), err)
+		}
+
+		if err := (bao.Encoding{}).VerifyBuf(enc, tree, root); err != nil {
+			t.Errorf("VerifyBuf of a combined encoding beside %d bytes of tree: %v", len(tree), err)
+		}
+	}
+
+	// When the encoding is outboard the tree is part of it, and a byte left
+	// over after it does not verify.
+	outboard := bao.Encoding{Outboard: true}
+	if err := outboard.VerifyBuf(data, obd, root); err != nil {
+		t.Fatalf("VerifyBuf of an outboard encoding: %v", err)
+	}
+
+	if err := outboard.VerifyBuf(data, append(bytes.Clone(obd), 0), root); !errors.Is(err, bao.ErrVerification) {
+		t.Errorf("VerifyBuf of an outboard encoding with a byte after its tree: %v, want ErrVerification", err)
+	}
+}
+
+// miscount is a destination that keeps nothing and answers every write with
+// no error and a count of its own, made from the count of bytes it was given.
+type miscount func(given int) int
+
+func (m miscount) Write(p []byte) (int, error) { return m(len(p)), nil }
+
+func (m miscount) WriteAt(p []byte, _ int64) (int, error) { return m(len(p)), nil }
+
+// TestContractWriteCounts: "a writer that reports no error but a count other
+// than the bytes it was given is an error too: io.ErrShortWrite, wrapped,
+// when the count is short", from Decode, DecodeSlice, ExtractSlice and
+// Encode. A destination that drops bytes without a word is never taken for
+// one that holds the content.
+func TestContractWriteCounts(t *testing.T) {
+	t.Parallel()
+
+	data := cData(t, 4096)
+	enc, root := (bao.Encoding{}).EncodeBuf(data)
+
+	var slice bytes.Buffer
+	if err := (bao.Encoding{}).ExtractSlice(&slice, bytes.NewReader(enc), nil, 0, uint64(len(data))); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, op := range []struct {
+		name string
+		run  func(dst miscount) error
+	}{
+		{"Decode", func(dst miscount) error {
+			return (bao.Encoding{}).Decode(dst, bytes.NewReader(enc), nil, root)
+		}},
+		{"DecodeSlice", func(dst miscount) error {
+			return (bao.Encoding{}).DecodeSlice(dst, bytes.NewReader(slice.Bytes()), 0, uint64(len(data)), root)
+		}},
+		{"ExtractSlice", func(dst miscount) error {
+			return (bao.Encoding{}).ExtractSlice(dst, bytes.NewReader(enc), nil, 0, uint64(len(data)))
+		}},
+		{"Encode", func(dst miscount) error {
+			_, err := (bao.Encoding{}).Encode(dst, bytes.NewReader(data), int64(len(data)))
+
+			return err
+		}},
+	} {
+		for _, test := range []struct {
+			name  string
+			count miscount
+			short bool
+		}{
+			{"one byte short", func(given int) int { return given - 1 }, true},
+			{"nothing", func(int) int { return 0 }, true},
+			{"one byte more", func(given int) int { return given + 1 }, false},
+			{"a negative count", func(int) int { return -1 }, false},
+		} {
+			err := op.run(test.count)
+			if err == nil || errors.Is(err, bao.ErrVerification) || test.short != errors.Is(err, io.ErrShortWrite) {
+				t.Errorf("%s into a destination that reports %s: %v", op.name, test.name, err)
+			}
+		}
+	}
+}
+
+// failingAfter is an io.WriterAt that takes its first writes whole and
+// refuses the rest.
+type failingAfter struct {
+	writes int
+	err    error
+}
+
+func (f *failingAfter) WriteAt(p []byte, _ int64) (int, error) {
+	if f.writes == 0 {
+		return 0, f.err
+	}
+
+	f.writes--
+
+	return len(p), nil
+}
+
+// TestContractEncodeErrorRoot: Encode "returns the tree's root, the BLAKE3
+// hash of the data, and the zero root beside an error". Whichever side
+// failed and however far the walk had gone, what it hashed is the root of no
+// data and is not returned: a caller that drops the error holds no root.
+func TestContractEncodeErrorRoot(t *testing.T) {
+	t.Parallel()
+
+	data := cData(t, 4096)
+
+	// Four groups: a header and three parent nodes to write, and the four
+	// groups among them when the encoding is combined.
+	for _, format := range []struct {
+		outboard bool
+		writes   int
+	}{{false, 8}, {true, 4}} {
+		lastWrite := &failingAfter{format.writes - 1, errBoom}
+
+		for _, test := range []struct {
+			name string
+			dst  io.WriterAt
+			src  io.Reader
+		}{
+			{"a source that ends at once", discardAt{}, &endsWith{nil, io.EOF}},
+			{"a source that ends between groups", discardAt{}, &endsWith{data[:2048], io.EOF}},
+			{"a source that ends inside a group", discardAt{}, &endsWith{data[:2049], io.EOF}},
+			{"a source that fails", discardAt{}, failingReader{errBoom}},
+			{"a destination that fails after the header", &failingAfter{1, errBoom}, bytes.NewReader(data)},
+			{"a destination that fails on its last write", lastWrite, bytes.NewReader(data)},
+		} {
+			root, err := (bao.Encoding{Outboard: format.outboard}).Encode(test.dst, test.src, int64(len(data)))
+			if err == nil || root != ([32]byte{}) {
+				t.Errorf("outboard %t, %s: root %x beside %v, want the zero root and an error",
+					format.outboard, test.name, root[:4], err)
+			}
+		}
+	}
+}
+
+// encodedSize is EncodedSize, and what it panicked with when it did.
+func encodedSize(format bao.Encoding, dataLen int64) (size int64, panicked string) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicked = fmt.Sprint(r)
+		}
+	}()
+
+	return format.EncodedSize(dataLen), ""
+}
+
+// TestContractEncodedSizeRange: EncodedSize "panics if dataLen is negative,
+// or if the size does not fit an int64: a combined encoding's does not once
+// data and tree together pass math.MaxInt64 bytes", and is the encoding's
+// size exactly up to there. An outboard tree is 8 + 64*(groups - 1) bytes
+// and always fits; a combined encoding adds the data, fits to the length
+// whose encoding is math.MaxInt64 bytes to the byte, and panics from the
+// next with a message that names the data length.
+func TestContractEncodedSizeRange(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		format  bao.Encoding
+		dataLen int64
+		want    int64 // 0: the size does not fit, and EncodedSize panics
+	}{
+		{bao.Encoding{Outboard: true}, math.MaxInt64, 8 + 64*(1<<53-1)},
+		{bao.Encoding{Group: bao.MaxGroup, Outboard: true}, math.MaxInt64, 8 + 64*(1<<33-1)},
+		{bao.Encoding{}, 8680820740569200759, math.MaxInt64},
+		{bao.Encoding{}, 8680820740569200760, 0},
+		{bao.Encoding{}, math.MaxInt64, 0},
+		{bao.Encoding{Group: bao.MaxGroup}, 9223371487098994679, math.MaxInt64},
+		{bao.Encoding{Group: bao.MaxGroup}, 9223371487098994680, 0},
+		{bao.Encoding{Group: bao.MaxGroup}, math.MaxInt64, 0},
+	} {
+		size, panicked := encodedSize(test.format, test.dataLen)
+
+		switch {
+		case test.want == 0 && !strings.Contains(panicked, "data length"):
+			t.Errorf("%+v, %d bytes: size %d, panic %q, want a panic naming the data length",
+				test.format, test.dataLen, size, panicked)
+		case test.want != 0 && (panicked != "" || size != test.want):
+			t.Errorf("%+v, %d bytes: size %d, panic %q, want %d",
+				test.format, test.dataLen, size, panicked, test.want)
+		}
+	}
+}
