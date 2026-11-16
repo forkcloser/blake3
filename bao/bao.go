@@ -6,8 +6,9 @@
 // An [Encoding] value names the format's two parameters, the chunk-group
 // size and whether the tree is outboard, and every operation is a method on
 // it; its zero value is standard Bao. A verification that fails is
-// [ErrVerification]; any other error is the reader's or the writer's own,
-// wrapped.
+// [ErrVerification]; an input that ends before its encoding does, with
+// io.EOF or an error wrapping it, is io.ErrUnexpectedEOF; any other error
+// is the reader's or the writer's own.
 package bao
 
 import (
@@ -40,7 +41,7 @@ type Encoding struct {
 }
 
 // The errors this package returns of its own; every other one is a reader's
-// or a writer's, wrapped.
+// or a writer's, or io.ErrUnexpectedEOF for an input cut short.
 var (
 	// ErrVerification is content that does not verify against the root:
 	// a chaining value or the final chunk that does not match, trailing
@@ -202,9 +203,21 @@ type encoder struct {
 	parentBuf [parentSize]byte
 }
 
+// readFull reads the whole of p. No read in this package is one an input
+// may lack, the header included: an input that ends before it, with io.EOF
+// or an error wrapping it, is cut short.
+func readFull(r io.Reader, p []byte) error {
+	_, err := io.ReadFull(r, p)
+	if errors.Is(err, io.EOF) {
+		return io.ErrUnexpectedEOF
+	}
+
+	return err //nolint:wrapcheck // the reader's own error, as the package promises it
+}
+
 func (e *encoder) read(p []byte) []byte {
 	if e.err == nil {
-		_, e.err = io.ReadFull(e.data, p)
+		e.err = readFull(e.data, p)
 	}
 
 	return p
@@ -263,7 +276,8 @@ func (e *encoder) encode(bufLen uint64, flags uint32, off uint64) (uint64, [8]ui
 // Decode reads an encoding, the data from data and the tree from tree when
 // the Encoding is outboard (tree is ignored otherwise), and streams the
 // verified content to dst. Content that does not verify against root is
-// ErrVerification, and nothing unverified is written.
+// ErrVerification, and nothing unverified is written; an encoding cut short
+// is io.ErrUnexpectedEOF, after the content that verified before the cut.
 //
 // Decode reads the tree 64 bytes at a time, so if the readers are
 // unbuffered (e.g. os.File), wrapping them in a bufio.Reader will
@@ -277,7 +291,7 @@ func (e Encoding) Decode(dst io.Writer, data, tree io.Reader, root [32]byte) err
 
 	read := func(r io.Reader, p []byte) []byte {
 		if err == nil {
-			_, err = io.ReadFull(r, p)
+			err = readFull(r, p)
 		}
 
 		return p
@@ -367,13 +381,15 @@ func (e Encoding) EncodeBuf(data []byte) ([]byte, [32]byte) {
 
 // VerifyBuf verifies an encoding in memory against root: data holds the
 // whole encoding, or the content with the tree in tree when the Encoding is
-// outboard. Content that does not verify, or bytes left over after it, is
-// ErrVerification.
+// outboard. Content that does not verify, an encoding too short to, or
+// bytes left over after it, is ErrVerification.
 func (e Encoding) VerifyBuf(data, tree []byte, root [32]byte) error {
 	d, o := bytes.NewBuffer(data), bytes.NewBuffer(tree)
 
+	// The readers are these buffers and the writer discards: what Decode
+	// reports is the encoding's fault, whichever error says it.
 	if err := e.Decode(io.Discard, d, o, root); err != nil {
-		return err
+		return ErrVerification
 	}
 
 	if d.Len() != 0 || o.Len() != 0 {
@@ -453,7 +469,7 @@ func (x *extractor) transfer(r io.Reader, n uint64, emit bool) {
 		return
 	}
 
-	_, x.err = io.ReadFull(r, x.buf[:n])
+	x.err = readFull(r, x.buf[:n])
 	if x.err != nil || !emit {
 		return
 	}
@@ -533,7 +549,7 @@ type sliceDecoder struct {
 
 func (d *sliceDecoder) read(n uint64) []byte {
 	if d.err == nil {
-		_, d.err = io.ReadFull(d.data, d.buf[:n])
+		d.err = readFull(d.data, d.buf[:n])
 	}
 
 	return d.buf[:n]
@@ -612,14 +628,18 @@ func (d *sliceDecoder) decodeGroup(cv [8]uint32, pos, bufLen uint64, flags uint3
 
 // VerifySlice verifies a slice encoding in memory for length bytes of
 // content from offset, and returns the verified content. A slice that does
-// not verify against root, or has bytes left over, is ErrVerification; a
-// range past the content is ErrSliceLength.
+// not verify against root, is too short to, or has bytes left over, is
+// ErrVerification; a range past the content is ErrSliceLength.
 func (e Encoding) VerifySlice(slice []byte, offset, length uint64, root [32]byte) ([]byte, error) {
 	d := bytes.NewBuffer(slice)
 
 	var buf bytes.Buffer
 	if err := e.DecodeSlice(&buf, d, offset, length, root); err != nil {
-		return nil, err
+		if errors.Is(err, ErrSliceLength) {
+			return nil, err
+		}
+
+		return nil, ErrVerification
 	}
 
 	if d.Len() > 0 {

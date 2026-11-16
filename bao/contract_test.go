@@ -24,6 +24,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"os"
@@ -161,6 +162,122 @@ func (f failingWriter) Write([]byte) (int, error) { return 0, f.err }
 
 var errBoom = errors.New("boom")
 
+// endsWith serves its bytes, then ends with err.
+type endsWith struct {
+	data []byte
+	err  error
+}
+
+func (e *endsWith) Read(p []byte) (int, error) {
+	if len(e.data) == 0 {
+		return 0, e.err
+	}
+
+	n := copy(p, e.data)
+	e.data = e.data[n:]
+
+	return n, nil
+}
+
+// TestContractCutShort: "an input that ends before its encoding does, with
+// io.EOF or an error wrapping it, is io.ErrUnexpectedEOF", from Decode,
+// DecodeSlice, ExtractSlice and Encode, wherever the cut falls, a node's
+// boundary included, and Decode has by then written "the content that
+// verified before the cut" and no more. To the buffer verifiers an encoding
+// "too short to" verify is ErrVerification.
+func TestContractCutShort(t *testing.T) {
+	t.Parallel()
+
+	data := cData(t, 3*1024+500)
+	enc, root := (bao.Encoding{}).EncodeBuf(data)
+
+	var slice bytes.Buffer
+	if err := (bao.Encoding{}).ExtractSlice(&slice, bytes.NewReader(enc), nil, 1024, 2000); err != nil {
+		t.Fatal(err)
+	}
+
+	ends := map[string]error{"io.EOF": io.EOF, "an error wrapping io.EOF": fmt.Errorf("gone: %w", io.EOF)}
+
+	for name, end := range ends {
+		for n := range enc {
+			var out bytes.Buffer
+
+			err := (bao.Encoding{}).Decode(&out, &endsWith{enc[:n], end}, nil, root)
+			if !errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, bao.ErrVerification) {
+				t.Fatalf("Decode cut at %d of %d, ending with %s: %v, want io.ErrUnexpectedEOF", n, len(enc), name, err)
+			}
+
+			if !bytes.HasPrefix(data, out.Bytes()) || out.Len() == len(data) {
+				t.Fatalf("Decode cut at %d: wrote %d bytes that are not a strict start of the content", n, out.Len())
+			}
+
+			err = (bao.Encoding{}).ExtractSlice(io.Discard, &endsWith{enc[:n], end}, nil, 0, uint64(len(data)))
+			if !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Fatalf("ExtractSlice cut at %d, ending with %s: %v, want io.ErrUnexpectedEOF", n, name, err)
+			}
+		}
+
+		for n := range slice.Len() {
+			err := (bao.Encoding{}).DecodeSlice(io.Discard, &endsWith{slice.Bytes()[:n], end}, 1024, 2000, root)
+			if !errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, bao.ErrVerification) {
+				t.Fatalf("DecodeSlice cut at %d, ending with %s: %v, want io.ErrUnexpectedEOF", n, name, err)
+			}
+		}
+
+		for _, n := range []int{0, 1, 1024, 2048, 2049, len(data) - 1} {
+			_, err := (bao.Encoding{}).Encode(discardAt{}, &endsWith{data[:n], end}, int64(len(data)))
+			if !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Fatalf("Encode with %d of %d bytes, ending with %s: %v, want io.ErrUnexpectedEOF",
+					n, len(data), name, err)
+			}
+		}
+	}
+
+	for n := range enc {
+		if err := (bao.Encoding{}).VerifyBuf(enc[:n], nil, root); !errors.Is(err, bao.ErrVerification) {
+			t.Fatalf("VerifyBuf of %d of %d bytes: %v, want ErrVerification", n, len(enc), err)
+		}
+	}
+
+	for n := range slice.Len() {
+		if _, err := (bao.Encoding{}).VerifySlice(
+			slice.Bytes()[:n],
+			1024,
+			2000,
+			root,
+		); !errors.Is(
+			err,
+			bao.ErrVerification,
+		) {
+			t.Fatalf("VerifySlice of %d of %d bytes: %v, want ErrVerification", n, slice.Len(), err)
+		}
+	}
+
+	obd, obRoot := (bao.Encoding{Outboard: true}).EncodeBuf(data)
+	for _, cut := range []struct{ data, tree []byte }{{data, nil}, {data[:len(data)-1], obd}, {data, obd[:len(obd)-1]}} {
+		if err := (bao.Encoding{Outboard: true}).VerifyBuf(
+			cut.data,
+			cut.tree,
+			obRoot,
+		); !errors.Is(
+			err,
+			bao.ErrVerification,
+		) {
+			t.Fatalf(
+				"outboard VerifyBuf of %d and %d bytes: %v, want ErrVerification",
+				len(cut.data),
+				len(cut.tree),
+				err,
+			)
+		}
+	}
+}
+
+// discardAt is a destination that keeps nothing.
+type discardAt struct{}
+
+func (discardAt) WriteAt(p []byte, _ int64) (int, error) { return len(p), nil }
+
 // TestContractErrors: a destination or a source that fails is its own error,
 // wrapped, from Encode, Decode, ExtractSlice and DecodeSlice; a slice request
 // past the content is ErrSliceLength; content that does not verify is
@@ -278,9 +395,6 @@ func TestContractErrors(t *testing.T) {
 
 	for _, short := range [][]byte{nil, {1, 2, 3}} {
 		want := io.ErrUnexpectedEOF
-		if len(short) == 0 {
-			want = io.EOF
-		}
 
 		if err := (bao.Encoding{}).ExtractSlice(io.Discard, bytes.NewReader(short), nil, 0, 1); !errors.Is(err, want) {
 			t.Errorf("ExtractSlice on %d header bytes: %v, want %v", len(short), err, want)
