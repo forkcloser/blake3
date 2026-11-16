@@ -661,10 +661,13 @@ func (c *countingReader) Read(p []byte) (int, error) {
 }
 
 // TestContractExtractSliceReads: ExtractSlice "reads the encoding from its
-// start to the end of the slice, and no further". The slice for the first
-// byte of a large content is the start of its encoding, the tree's left edge
-// and one group: as many bytes are read, from data and tree together, as the
-// slice holds, however much content follows.
+// start to the end of the slice, and no further". A slice from the start of
+// a large content is the start of its encoding, the tree's left edge and
+// the groups under it: as many bytes are read, from data and tree together,
+// as the slice holds, however much content follows. That holds for the
+// first byte, and for a range that ends where the next node starts, which
+// is not read: a group, a parent after two groups, the tree's whole right
+// half after the left.
 func TestContractExtractSliceReads(t *testing.T) {
 	t.Parallel()
 
@@ -680,27 +683,36 @@ func TestContractExtractSliceReads(t *testing.T) {
 		{"outboard, group 2", bao.Encoding{Group: 2, Outboard: true}},
 	} {
 		enc, root := test.format.EncodeBuf(data)
+		leaf := uint64(groupSize(test.format.Group))
 
-		// Combined, the encoding is the data reader and the tree reader is
-		// ignored; outboard, the content and the tree each have their own.
-		content, tree := &countingReader{r: bytes.NewReader(enc)}, &countingReader{r: bytes.NewReader(nil)}
+		for _, length := range []uint64{1, leaf, 2 * leaf, uint64(len(data)) / 2} {
+			// Combined, the encoding is the data reader and the tree reader is
+			// ignored; outboard, the content and the tree each have their own.
+			content, tree := &countingReader{r: bytes.NewReader(enc)}, &countingReader{r: bytes.NewReader(nil)}
 
-		if test.format.Outboard {
-			content.r, tree.r = bytes.NewReader(data), bytes.NewReader(enc)
-		}
+			if test.format.Outboard {
+				content.r, tree.r = bytes.NewReader(data), bytes.NewReader(enc)
+			}
 
-		var slice bytes.Buffer
-		if err := test.format.ExtractSlice(&slice, content, tree, 0, 1); err != nil {
-			t.Fatalf("%s: %v", test.name, err)
-		}
+			var slice bytes.Buffer
+			if err := test.format.ExtractSlice(&slice, content, tree, 0, length); err != nil {
+				t.Fatalf("%s, %d bytes: %v", test.name, length, err)
+			}
 
-		if out, err := test.format.VerifySlice(slice.Bytes(), 0, 1, root); err != nil || !bytes.Equal(out, data[:1]) {
-			t.Fatalf("%s: the slice does not verify: %d bytes, %v", test.name, len(out), err)
-		}
+			if out, err := test.format.VerifySlice(
+				slice.Bytes(),
+				0,
+				length,
+				root,
+			); err != nil ||
+				!bytes.Equal(out, data[:length]) {
+				t.Fatalf("%s, %d bytes: the slice does not verify: %d bytes, %v", test.name, length, len(out), err)
+			}
 
-		if read := content.n + tree.n; read != slice.Len() {
-			t.Errorf("%s: read %d bytes (%d of content, %d of tree) for a slice of %d",
-				test.name, read, content.n, tree.n, slice.Len())
+			if read := content.n + tree.n; read != slice.Len() {
+				t.Errorf("%s, %d bytes: read %d bytes (%d of content, %d of tree) for a slice of %d",
+					test.name, length, read, content.n, tree.n, slice.Len())
+			}
 		}
 	}
 }

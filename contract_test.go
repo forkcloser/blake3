@@ -894,7 +894,9 @@ func refSubtree(data []byte, key [8]uint32, counter uint64, flags uint32) refimp
 // tree and a large aligned read are dealt out: at 1 both run serially, at 3
 // the work does not divide evenly and the remainder folds into the first
 // goroutines, and the default on a many-core machine takes neither path.
-// Not parallel: it sets a process-wide value, and restores it.
+// The setting is the caller's and the process's: a Write and a Read consult
+// it and leave it as it was. Not parallel: it sets a process-wide value, and
+// restores it.
 func TestContractGOMAXPROCS(t *testing.T) { //nolint:paralleltest // sets GOMAXPROCS for the process
 	in := make([]byte, 1<<20)
 	for i := range in {
@@ -921,6 +923,10 @@ func TestContractGOMAXPROCS(t *testing.T) { //nolint:paralleltest // sets GOMAXP
 			t.Errorf("GOMAXPROCS=%d: Sum = %x, want %x", procs, got, wantSum)
 		}
 
+		if got := runtime.GOMAXPROCS(0); got != procs {
+			t.Fatalf("GOMAXPROCS=%d: the Write left it at %d", procs, got)
+		}
+
 		buf := make([]byte, out)
 		if _, err := io.ReadFull(h.XOF(), buf); err != nil {
 			t.Fatalf("GOMAXPROCS=%d: XOF read: %v", procs, err)
@@ -928,6 +934,10 @@ func TestContractGOMAXPROCS(t *testing.T) { //nolint:paralleltest // sets GOMAXP
 
 		if !bytes.Equal(buf, wantXOF) {
 			t.Errorf("GOMAXPROCS=%d: XOF output differs from the reference", procs)
+		}
+
+		if got := runtime.GOMAXPROCS(0); got != procs {
+			t.Fatalf("GOMAXPROCS=%d: the Read left it at %d", procs, got)
 		}
 	}
 }
@@ -1149,6 +1159,72 @@ func TestContractMarshalCounter(t *testing.T) {
 
 	if got := h.Sum(nil); len(got) != blake3.Size {
 		t.Fatalf("a Hasher restored at the last counter gave %d bytes", len(got))
+	}
+}
+
+// TestContractMarshalTruncated: "A malformed state is refused with an error
+// and h is left unchanged", for a state cut short anywhere. Every proper
+// prefix of a state is tried, in each mode: of a hash of nothing, of input
+// held whole, and of input past a group, whose state carries a subtree on a
+// host of either width. A cut inside the fixed fields, a subtree, the count
+// of bytes held or those bytes is an error and never a panic, and the slice
+// handed over ends at the cut, with no capacity behind it to read into.
+func TestContractMarshalTruncated(t *testing.T) {
+	t.Parallel()
+
+	in := cInput(20*kernel.ChunkSize + 300)
+
+	// The panic restoring data over h ended in, or its error.
+	restore := func(h *blake3.Hasher, data []byte) (panicked any, err error) {
+		defer func() { panicked = recover() }()
+
+		return nil, h.UnmarshalBinary(data)
+	}
+
+	for _, m := range modes() {
+		for _, n := range []int{0, 1, kernel.ChunkSize + 1, len(in)} {
+			src := m.new()
+			src.Write(in[:n])
+
+			state := marshal(t, src)
+
+			h := m.new()
+			h.Write([]byte("abc"))
+
+			before := h.Sum(nil)
+
+			for cut := range state {
+				panicked, err := restore(h, state[:cut:cut])
+				if panicked != nil {
+					t.Fatalf(
+						"%s, %d bytes in: the state cut to %d of %d bytes panics: %v",
+						m.name,
+						n,
+						cut,
+						len(state),
+						panicked,
+					)
+				}
+
+				if err == nil {
+					t.Fatalf(
+						"%s, %d bytes in: the state cut to %d of %d bytes was accepted",
+						m.name,
+						n,
+						cut,
+						len(state),
+					)
+				}
+
+				if got := h.Sum(nil); !bytes.Equal(got, before) {
+					t.Fatalf("%s, %d bytes in: the refused state cut to %d bytes changed the Hasher", m.name, n, cut)
+				}
+			}
+
+			if panicked, err := restore(h, state); err != nil || panicked != nil {
+				t.Fatalf("%s, %d bytes in: the whole state: %v, %v", m.name, n, err, panicked)
+			}
+		}
 	}
 }
 
@@ -1391,6 +1467,32 @@ func TestContractMarshalAcrossHosts(t *testing.T) {
 			if got := again.Sum(nil); !bytes.Equal(got, refimpl.Hash(in, 32)) {
 				t.Fatalf("%s: the state at a write ending at %d, continued, is not the reference's", tc.name, end)
 			}
+		}
+
+		// The same state continued a byte at a time, to the end of the chunk
+		// it holds and two bytes on. A wide host realigning a narrow state
+		// then holds a full chunk at a counter that is not a group's, and
+		// the next byte is a write of its own: it completes that chunk, and
+		// is held in its turn as the start of the following one.
+		bytewise := h
+		boundary := tc.done + kernel.ChunkSize - tc.done%kernel.ChunkSize
+
+		for at := tc.done; at < boundary+2; at++ {
+			bytewise.Write(in[at : at+1])
+
+			if at+1 < boundary {
+				continue
+			}
+
+			if got := bytewise.Sum(nil); !bytes.Equal(got, refimpl.Hash(in[:at+1], 32)) {
+				t.Fatalf("%s: digest %d bytes in, written a byte at a time, is not the reference's", tc.name, at+1)
+			}
+		}
+
+		bytewise.Write(in[boundary+2:])
+
+		if got := bytewise.Sum(nil); !bytes.Equal(got, refimpl.Hash(in, 32)) {
+			t.Fatalf("%s: continued after the bytes, the digest is not the reference's", tc.name)
 		}
 
 		// Continue in two writes, one small, so the realignment a wide host
