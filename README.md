@@ -85,12 +85,17 @@ if _, err := xof.ReadAt(buf, 1<<30); err != nil { // one MiB, a GiB in
 ## Keeping a hash in progress
 
 A `Hasher` implements `encoding.BinaryMarshaler`, `BinaryUnmarshaler` and
-`BinaryAppender`. The state is at most 18 KiB and a few dozen bytes, a few
-dozen alone for a hash of little, and names nothing about the host that
-wrote it: a state marshaled
-on one machine restores on any other, whatever kernels each has, and
-continues from where it was. The state carries the key, so it is as secret as
-the key: not to be stored or sent where the key would not be.
+`BinaryAppender`. The state is 50 bytes for a hash of nothing, 32 more for
+each subtree in progress, and the input held back: at most 18 KiB in all. It
+names nothing about the host that wrote it: a state marshaled on one machine
+restores on any other, whatever kernels each has, and continues from where it
+was. Hosts hold back different amounts, so two hosts' states of the same
+input need not be the same bytes. The state carries the key, so it is as secret
+as the key: not to be stored or sent where the key would not be.
+
+The state starts with a tag and a format version. `UnmarshalBinary` restores
+the version this release writes and refuses any other: a state from a release
+with another version is an error, never a different state.
 
 ```go
 state, err := h.MarshalBinary()
@@ -168,13 +173,49 @@ root := guts.ParentNode(left, right, &guts.IV, guts.FlagRoot)
 out := guts.CompressNode(root) // the first eight words are the digest
 ```
 
+A root that is not a parent, the node `CompressChunk`, `CompressBuffer` or
+`CompressEigentree` returns, is made by setting `guts.FlagRoot` in its
+`Flags`, not by passing the flag in.
+
+## Migrating from v1
+
+v1 is `github.com/forkcloser/blake3`, through v1.1.0. Digests, keyed digests,
+derived keys, output streams and Bao encodings are the same bytes in v2. The
+calls below are the ones that change, and a v1 call fails to compile against
+v2 until it is changed. `enc` is a
+`bao.Encoding{Group: group, Outboard: outboard}`.
+
+| v1 | v2 |
+| --- | --- |
+| `import "github.com/forkcloser/blake3"`, `.../bao`, `.../guts` | `import "github.com/forkcloser/blake3/v2"`, `.../v2/bao`, `.../v2/guts` |
+| `blake3.New(32, nil)` | `blake3.New()` |
+| `blake3.New(32, key)`, `key` a 32-byte slice | `blake3.NewKeyed([32]byte(key))`; `blake3.Sum256Keyed` in one call |
+| `blake3.New(n, key)`, then `h.Sum(nil)` for `n` bytes | `io.ReadFull(h.XOF(), out)`, `out` of `n` bytes; `Sum` and `Size` are 32 bytes |
+| `blake3.DeriveKey(subKey, ctx, srcKey)` fills `subKey` | `subKey := blake3.DeriveKey(ctx, srcKey, n)` |
+| `bao.EncodedSize(dataLen, group, outboard)`, an `int` | `enc.EncodedSize(dataLen)`, `int64` in and out |
+| `bao.Encode(dst, data, dataLen, group, outboard)` | `enc.Encode(dst, data, dataLen)` |
+| `bao.EncodeBuf(data, group, outboard)` | `enc.EncodeBuf(data)` |
+| `ok, err := bao.Decode(dst, data, outboard, group, root)` | `err := enc.Decode(dst, data, tree, root)` |
+| `ok, err := bao.DecodeSlice(dst, data, group, offset, length, root)` | `err := enc.DecodeSlice(dst, slice, offset, length, root)` |
+| `bao.ExtractSlice(dst, data, outboard, group, offset, length)` | `enc.ExtractSlice(dst, data, tree, offset, length)` |
+| `ok := bao.VerifyBuf(data, outboard, group, root)` | `err := enc.VerifyBuf(data, tree, root)` |
+| `ok := bao.VerifyChunk(chunks, outboard, group, offset, root)` | `err := enc.VerifyChunk(chunks, tree, offset, root)` |
+| `content, ok := bao.VerifySlice(data, group, offset, length, root)` | `content, err := enc.VerifySlice(slice, offset, length, root)` |
+| `guts.BytesToWords`, `guts.WordsToBytes` | `encoding/binary`, little-endian |
+| `guts.CompressBlocks`, `guts.CompressBlocksN` | `n.Counter = i` and `guts.CompressNode(n)` for output block `i` |
+
+v1 took a non-nil `outboard` argument to mean an outboard encoding. v2 reads
+that from `enc.Outboard`, to be set wherever v1 was handed an outboard tree:
+without it `Decode`, `ExtractSlice` and `VerifyBuf` ignore `tree`. Where v1 returned a `bool`, v2 returns an error:
+nil is verified content, and content that does not verify is
+`bao.ErrVerification`, matched with `errors.Is`.
+
 ## Performance
 
 On amd64 the AVX-512 and AVX2 kernels are selected at runtime from the CPU's
 features. `Write` holds a group of sixteen chunks back and hands the kernels
-whole groups, so a write costs one kernel call per 16 KiB and nothing else up
-to 128 KiB; from 192 KiB a write's trees go to goroutines, as do large
-output reads. Medians of six runs of `just bench-amd64` on 2026-11-12
+whole groups, so a write costs one kernel call per 16 KiB; from 192 KiB a
+write's trees go to goroutines, as do large output reads. Medians of six runs of `just bench-amd64` on 2026-11-12
 ([run 43134512263](https://github.com/forkcloser/blake3/actions/runs/43134512263)),
 a GitHub `ubuntu-24.04` runner with an AMD EPYC 9V74 (Zen 4, 4 vCPUs), Go
 1.27.4; the AVX-512 kernels as dispatched, then the same binary with
@@ -198,9 +239,11 @@ In throughput, hashing 1 MiB runs at 6.6 GB/s under AVX-512, 4.4 under AVX2
 and 1.3 in pure Go, and io.Copy's 32 KiB writes at 3.7, 2.9 and 0.56; XOF
 output at 1 MiB runs at 8.1, 7.8 and 1.6, the two SIMD paths equal there.
 Inputs of a chunk or less never reach the kernels and cost the same on every
-path. Writes under 48 KiB allocate nothing. On arm64 the pure-Go code is the
-whole story: an Apple M5 Pro hashes 1 MiB at 4.5 GB/s and reads 1 MiB of XOF
-at 5.1, with many cores to deal the tree out to.
+path. A `Write` of up to 24 KiB allocates nothing on any path, nor one of up
+to 32 KiB, io.Copy's size, under the SIMD kernels; in pure Go io.Copy's
+writes are dealt out to goroutines, and allocate. On arm64 the pure-Go code
+is the whole story: an Apple M5 Pro hashes 1 MiB at 4.5 GB/s and reads 1 MiB
+of XOF at 5.1, with many cores to deal the tree out to.
 
 `just bench` runs the benchmarks on the host; `just bench-amd64` runs the
 three paths on a linux/amd64 host with AVX-512, and the `bench` workflow does

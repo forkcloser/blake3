@@ -154,10 +154,11 @@ test-isa isa:
 
 # The AVX-512 kernels run only on an amd64 host with avx512f, which GitHub's
 # ubuntu runners have on some runs and not others. Intel SDE executes a binary
-# under an emulated CPU, so the guts tests run here under Sapphire Rapids on
-# any x86-64 Linux host. BLAKE3_REQUIRE_ISA=avx512 makes TestRequiredISA fail
-# unless the dispatcher selected the AVX-512 kernels, so a pass means those
-# kernels, not a fallback, produced the specification's results.
+# under an emulated CPU, so the kernel and root tests run here under Sapphire
+# Rapids on any x86-64 Linux host. BLAKE3_REQUIRE_ISA=avx512 makes
+# TestRequiredISA fail unless the dispatcher selected the AVX-512 kernels, so a
+# pass means those kernels, not a fallback, produced the specification's
+# results.
 # -force_emulate skx: SDE runs natively whatever the host supports, and on a
 # host with AVX-512 the kernels then compute wrong trees at random, their
 # vector state lost under Pin across Go's preemption signals. Forced

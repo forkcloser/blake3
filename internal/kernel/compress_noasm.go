@@ -77,7 +77,7 @@ func mergeSubtrees(cvs *[MaxSIMD][8]uint32, numCVs uint64, key *[8]uint32, flags
 	return mergeSubtreesGeneric(cvs, numCVs, key, flags)
 }
 
-// BytesToWords converts an array of 64 bytes to an array of 16 bytes.
+// BytesToWords converts an array of 64 bytes to an array of 16 words.
 func BytesToWords(bytes [64]byte) (words [16]uint32) {
 	for i := range words {
 		words[i] = binary.LittleEndian.Uint32(bytes[4*i:])
