@@ -13,6 +13,10 @@ const simdReadsFullBuffer = false
 // kernelsDispatched: there is no kernel off amd64.
 func kernelsDispatched() bool { return false }
 
+// spread is ParallelGrain in groups and ParallelFloor in half groups: one
+// group a goroutine from a group and a half, in pure Go.
+func spread() (grain, floorHalves int) { return 1, 3 }
+
 // CompressBuffer compresses the first buflen bytes of buf, up to MaxSIMD
 // chunks, and returns their root node.
 func CompressBuffer(buf *[MaxSIMD * ChunkSize]byte, buflen int, key *[8]uint32, counter uint64, flags uint32) Node {

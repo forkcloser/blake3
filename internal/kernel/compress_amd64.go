@@ -12,6 +12,19 @@ const simdReadsFullBuffer = true
 // SIMD kernel on this host.
 func kernelsDispatched() bool { return haveAVX512 || haveAVX2 }
 
+// spread is ParallelGrain in groups and ParallelFloor in half groups, for
+// the path this host takes.
+func spread() (grain, floorHalves int) {
+	switch {
+	case haveAVX512:
+		return 8, 24
+	case haveAVX2:
+		return 2, 32
+	}
+
+	return 1, 3
+}
+
 //go:noescape
 func compressChunksAVX512(cvs *[16][8]uint32, buf *[16 * ChunkSize]byte, key *[8]uint32, counter uint64, flags uint32)
 

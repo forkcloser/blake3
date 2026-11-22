@@ -48,19 +48,26 @@ func Width() int {
 	return 1
 }
 
-// ParallelGrain is the least input, in bytes, one goroutine is handed when a
-// tree is compressed in parallel: the pure-Go group's worth of work on the
-// dispatched path, some tens of microseconds, under which the wake of a
-// goroutine costs more than the work it takes away. In pure Go that is one
-// MaxSIMD-chunk group; under the SIMD kernels, which compress a group
-// several times faster, it is eight. A caller spreading trees of its own
-// across goroutines should hand each at least this much.
+// ParallelGrain is the input, in bytes, one goroutine is handed when a tree
+// is dealt out, and ParallelFloor the least input worth dealing out at all:
+// under the floor the wake of goroutines costs more than the work they take
+// away. Both are counts of MaxSIMD-chunk groups measured for each path, and
+// no path's figures serve another: in pure Go a grain of one group from a
+// group and a half; under the AVX-512 kernels of eight from twelve; under
+// the AVX2 ones of two, from sixteen. A caller spreading trees of its own
+// across goroutines should do so from the floor, a grain to each.
 func ParallelGrain() int {
-	if kernelsDispatched() {
-		return 8 * MaxSIMD * ChunkSize
-	}
+	grain, _ := spread()
 
-	return MaxSIMD * ChunkSize
+	return grain * MaxSIMD * ChunkSize
+}
+
+// ParallelFloor is the least input, in bytes, worth goroutines: see
+// ParallelGrain.
+func ParallelFloor() int {
+	_, floorHalves := spread()
+
+	return floorHalves * MaxSIMD * ChunkSize / 2
 }
 
 // IV is the BLAKE3 initialization vector.
@@ -115,11 +122,25 @@ func AppendEigentrees(trees []int, counter, chunks uint64) []int {
 	return trees
 }
 
-// CompressEigentree compresses a buffer of 2^n whole chunks in parallel,
-// returning their root node. It panics on any other length: a tree is a
-// power-of-two number of chunks, and a partial chunk belongs to
-// CompressChunk or CompressBuffer.
+// CompressEigentree compresses a buffer of 2^n whole chunks, in parallel
+// when it holds ParallelFloor or more, returning their root node. It panics
+// on any other length: a tree is a power-of-two number of chunks, and a
+// partial chunk belongs to CompressChunk or CompressBuffer.
 func CompressEigentree(buf []byte, key *[8]uint32, counter uint64, flags uint32) Node {
+	return eigentree(buf, key, counter, flags, len(buf) >= ParallelFloor())
+}
+
+// SpreadEigentree is CompressEigentree for a caller that is already
+// spreading an input of ParallelFloor or more across goroutines, of which
+// buf is one tree: the tree is dealt out a grain a goroutine whatever its
+// own size.
+func SpreadEigentree(buf []byte, key *[8]uint32, counter uint64, flags uint32) Node {
+	return eigentree(buf, key, counter, flags, true)
+}
+
+// eigentree is the two above: dealt, a tree of several grains goes to
+// goroutines.
+func eigentree(buf []byte, key *[8]uint32, counter uint64, flags uint32, dealt bool) Node {
 	numChunks := uint64(len(buf) / ChunkSize)
 	switch {
 	case len(buf)%ChunkSize != 0 || bits.OnesCount64(numChunks) != 1:
@@ -143,19 +164,21 @@ func CompressEigentree(buf []byte, key *[8]uint32, counter uint64, flags uint32)
 
 		return CompressBuffer((*[MaxSIMD * ChunkSize]byte)(buf[:MaxSIMD*ChunkSize]), len(buf), key, counter, flags)
 	default:
-		return compressGroups(buf, key, counter, flags, numChunks/MaxSIMD)
+		return compressGroups(buf, key, counter, flags, numChunks/MaxSIMD, dealt)
 	}
 }
 
 // compressGroups compresses an eigentree of more than MaxSIMD chunks, in
-// groups of MaxSIMD, and returns its root node.
-func compressGroups(buf []byte, key *[8]uint32, counter uint64, flags uint32, groups uint64) Node {
+// groups of MaxSIMD, and returns its root node; dealt, the groups go to
+// goroutines.
+func compressGroups(buf []byte, key *[8]uint32, counter uint64, flags uint32, groups uint64, dealt bool) Node {
 	// One CV per MaxSIMD-chunk group; the merge below is defined over
 	// these, so they are computed identically however the work is
 	// spread. A goroutine gets a run of groups worth at least
 	// ParallelGrain, which under the SIMD kernels is several: waking a
 	// thread costs more than a kernel's group is worth, and a tree dealt
-	// out a group at a time spends its time in the scheduler. The whole
+	// out a group at a time spends its time in the scheduler; how many is
+	// each kernel's own, by measurement. The whole
 	// tree runs on the caller when it does not split at least two ways.
 	// The deal caps a tree at GOMAXPROCS goroutines: what the scheduler
 	// will actually run on, a container's CPU quota and the caller's
@@ -180,7 +203,7 @@ func compressGroups(buf []byte, key *[8]uint32, counter uint64, flags uint32, gr
 
 	groupsPerGoroutine := uint64(ParallelGrain() / (MaxSIMD * ChunkSize)) // #nosec G115 -- a small positive quotient
 	// #nosec G115 -- GOMAXPROCS is a small positive count
-	if par := min(groups/groupsPerGoroutine, uint64(runtime.GOMAXPROCS(0))); par > 1 {
+	if par := min(groups/groupsPerGoroutine, uint64(runtime.GOMAXPROCS(0))); dealt && par > 1 {
 		// Deal groups out in par near-equal contiguous runs; the
 		// remainder folds into the runs rather than a second spawn.
 		per, extra := groups/par, groups%par

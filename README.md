@@ -214,30 +214,31 @@ nil is verified content, and content that does not verify is
 
 On amd64 the AVX-512 and AVX2 kernels are selected at runtime from the CPU's
 features. `Write` holds a group of sixteen chunks back and hands the kernels
-whole groups, so a write costs one kernel call per 16 KiB; from 192 KiB a
-write's trees go to goroutines, as do large output reads. Medians of six runs of `just bench-amd64` on 2026-11-12
-([run 43134512263](https://github.com/forkcloser/blake3/actions/runs/43134512263)),
-a GitHub `ubuntu-24.04` runner with an AMD EPYC 9V74 (Zen 4, 4 vCPUs), Go
+whole groups, so a write costs one kernel call per 16 KiB; from 192 KiB
+under AVX-512 and 256 KiB under AVX2 a write's trees go to goroutines, as do
+large output reads. Medians of six runs of `just bench-amd64` on 2026-11-22
+([run 45000959243](https://github.com/forkcloser/blake3/actions/runs/45000959243)),
+a GitHub `ubuntu-24.04` runner with an Intel Xeon 6975P-C (4 vCPUs), Go
 1.27.4; the AVX-512 kernels as dispatched, then the same binary with
 `GODEBUG=cpu.avx512f=off` (AVX2) and with `cpu.avx2=off` as well (pure Go).
-Half the range over the median is under 7.1% everywhere.
+Half the range over the median is under 3.6% everywhere.
 
 | Benchmark | AVX-512 | AVX2 | pure Go |
 | --- | ---: | ---: | ---: |
-| `Write`, io.Copy's 32 KiB, per KiB | 280 ns | 350 ns | 1.82 µs |
-| `WriteSizes/4096` | 1.12 µs | 1.41 µs | 7.25 µs |
-| `WriteSizes/32768` | 8.93 µs | 11.33 µs | 57.06 µs |
-| `WriteSizes/131072` | 34.99 µs | 44.90 µs | 127.7 µs |
-| `WriteSizes/1048576` | 159.8 µs | 237.6 µs | 796.1 µs |
-| `XOF/65536` | 22.34 µs | 22.54 µs | 62.61 µs |
-| `XOF/1048576` | 130.2 µs | 135.0 µs | 670.2 µs |
-| `Sum256/64` | 110 ns | 110 ns | 110 ns |
-| `Sum256/1024` | 1.65 µs | 1.65 µs | 1.65 µs |
-| `Sum256/1048576` | 163.7 µs | 243.9 µs | 796.1 µs |
+| `Write`, io.Copy's 32 KiB, per KiB | 204 ns | 312 ns | 1.28 µs |
+| `WriteSizes/4096` | 810 ns | 1.24 µs | 6.42 µs |
+| `WriteSizes/32768` | 6.46 µs | 9.88 µs | 41.42 µs |
+| `WriteSizes/131072` | 25.41 µs | 39.26 µs | 111.3 µs |
+| `WriteSizes/1048576` | 121.8 µs | 175.2 µs | 655.8 µs |
+| `XOF/65536` | 25.17 µs | 22.87 µs | 59.65 µs |
+| `XOF/1048576` | 144.1 µs | 157.0 µs | 558.8 µs |
+| `Sum256/64` | 100 ns | 100 ns | 100 ns |
+| `Sum256/1024` | 1.47 µs | 1.47 µs | 1.47 µs |
+| `Sum256/1048576` | 124.9 µs | 176.3 µs | 658.7 µs |
 
-In throughput, hashing 1 MiB runs at 6.6 GB/s under AVX-512, 4.4 under AVX2
-and 1.3 in pure Go, and io.Copy's 32 KiB writes at 3.7, 2.9 and 0.56; XOF
-output at 1 MiB runs at 8.1, 7.8 and 1.6, the two SIMD paths equal there.
+In throughput, hashing 1 MiB runs at 8.6 GB/s under AVX-512, 6.0 under AVX2
+and 1.6 in pure Go, and io.Copy's 32 KiB writes at 5.1, 3.3 and 0.79; XOF
+output at 1 MiB runs at 7.3, 6.7 and 1.9, the two SIMD paths near equal there.
 Inputs of a chunk or less never reach the kernels and cost the same on every
 path. A `Write` of up to 24 KiB allocates nothing on any path, nor one of up
 to 32 KiB, io.Copy's size, under the SIMD kernels; in pure Go io.Copy's
