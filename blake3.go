@@ -449,10 +449,32 @@ func (h *Hasher) compressTreesParallel(flush bool, eigenbuf []byte, trees []int)
 // setDeriveKey puts h in key-derivation mode for context: the context,
 // hashed in its own mode, is the key the material is hashed under.
 func (h *Hasher) setDeriveKey(context string) {
-	c := Hasher{key: kernel.IV, flags: kernel.FlagDeriveKeyContext}
-	c.Write([]byte(context))
+	*h = Hasher{key: contextKey(context), flags: kernel.FlagDeriveKeyMaterial}
+}
 
-	*h = Hasher{key: kernel.ChainingValue(c.rootNode()), flags: kernel.FlagDeriveKeyMaterial}
+// contextKey is the key a key derivation under context hashes its material
+// with: the hash of the context, in the mode of its own.
+func contextKey(context string) [8]uint32 {
+	return kernel.ChainingValue(rootOf([]byte(context), &kernel.IV, kernel.FlagDeriveKeyContext))
+}
+
+// rootOf is the root node of b under key in the mode flags name, a keyed
+// one: what a Hasher of that key and mode holds after one Write of b. An
+// input of a chunk or less is compressed as it stands, with no Hasher:
+// making one, with the group it holds back, costs more than such an input
+// does to hash.
+func rootOf(b []byte, key *[8]uint32, flags uint32) kernel.Node {
+	if len(b) > kernel.ChunkSize {
+		h := Hasher{key: *key, flags: flags}
+		h.Write(b)
+
+		return h.rootNode()
+	}
+
+	n := kernel.CompressChunk(b, key, 0, flags)
+	n.Flags |= kernel.FlagRoot
+
+	return n
 }
 
 // groupHeight is the height of a tree of kernel.MaxSIMD chunks, the held
@@ -544,9 +566,8 @@ func Sum512(b []byte) (out [64]byte) {
 
 // Sum256Keyed returns the keyed BLAKE3 hash of b under key: a MAC.
 func Sum256Keyed(key [32]byte, b []byte) (out [32]byte) {
-	h := Hasher{key: keyWords(key), flags: kernel.FlagKeyedHash}
-	h.Write(b)
-	sum := kernel.WordsToBytes(kernel.CompressNode(h.rootNode()))
+	words := keyWords(key)
+	sum := kernel.WordsToBytes(kernel.CompressNode(rootOf(b, &words, kernel.FlagKeyedHash)))
 	copy(out[:], sum[:])
 
 	return out
@@ -556,15 +577,12 @@ func Sum256Keyed(key [32]byte, b []byte) (out [32]byte) {
 // NewDeriveKey describes; the first 32 are the digest, the rest the XOF's.
 // It panics if n is negative.
 func DeriveKey(context string, material []byte, n int) []byte {
-	var h Hasher
-
-	h.setDeriveKey(context)
-	h.Write(material)
+	key := contextKey(context)
 
 	out := make([]byte, n)
 	// From offset 0 the read cannot reach the end of the stream, the one
 	// case in which Read returns less than asked, or an error.
-	r := OutputReader{n: h.rootNode()}
+	r := OutputReader{n: rootOf(material, &key, kernel.FlagDeriveKeyMaterial)}
 	_, _ = r.Read(out)
 
 	return out
