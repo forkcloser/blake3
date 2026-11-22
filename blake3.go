@@ -336,12 +336,12 @@ func (h *Hasher) rootNode() kernel.Node {
 // when flush is set and then eigenbuf's eigentrees, and pushes their
 // chaining values in tree order. A lone tree runs on the caller, fanning
 // out inside CompressEigentree when it is large; several go to goroutines
-// once they hold one and a half times the parallel grain between them, the
-// grain being what one goroutine is worth on the dispatched path: from
-// 24 KiB of trees in pure Go, 192 KiB under the SIMD kernels. The half
-// grain on top is for the tail: at one grain a write of a group and a few
-// chunks, [16, 4, 2, 1], would wake a goroutine for the few, which costs
-// more than compressing them here.
+// once they hold the dispatched path's ParallelFloor between them: 24 KiB
+// of trees in pure Go, 192 KiB under the AVX-512 kernels, 256 KiB under the
+// AVX2 ones. The floor is above one goroutine's grain for the tail's sake:
+// at one grain a write of a group and a few chunks, [16, 4, 2, 1], would
+// wake a goroutine for the few, which costs more than compressing them
+// here.
 func (h *Hasher) compressTrees(flush bool, eigenbuf []byte) {
 	// A climb of at most 64 trees to an aligned counter, then a descent of
 	// at most 64: a fixed array, so the serial path allocates nothing.
@@ -365,7 +365,7 @@ func (h *Hasher) compressTrees(flush bool, eigenbuf []byte) {
 		total += len(h.buf)
 	}
 
-	if grain := kernel.ParallelGrain(); len(trees) == 1 || total < grain+grain/2 {
+	if len(trees) == 1 || total < kernel.ParallelFloor() {
 		h.compressTreesSerial(flush, eigenbuf, trees)
 	} else {
 		h.compressTreesParallel(flush, eigenbuf, trees)
@@ -421,7 +421,7 @@ func (h *Hasher) compressTreesParallel(flush bool, eigenbuf []byte, trees []int)
 
 			for i, height := range kernel.AppendEigentrees(heights[:0], counter, uint64(len(buf)/kernel.ChunkSize)) {
 				n := (1 << height) * kernel.ChunkSize
-				cvs[idx+i] = kernel.ChainingValue(kernel.CompressEigentree(buf[:n], &key, counter, flags))
+				cvs[idx+i] = kernel.ChainingValue(kernel.SpreadEigentree(buf[:n], &key, counter, flags))
 				buf = buf[n:]
 				counter += 1 << height
 			}
