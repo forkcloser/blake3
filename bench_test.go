@@ -76,3 +76,27 @@ func BenchmarkSum256(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkKeyedSmall is the keyed modes on a 64-byte input, where what a
+// call sets up costs more than what it hashes.
+func BenchmarkKeyedSmall(b *testing.B) {
+	var key [32]byte
+
+	buf := make([]byte, 64)
+
+	b.Run("Sum256Keyed", func(b *testing.B) {
+		b.ReportAllocs()
+
+		for range b.N {
+			blake3.Sum256Keyed(key, buf)
+		}
+	})
+
+	b.Run("DeriveKey", func(b *testing.B) {
+		b.ReportAllocs()
+
+		for range b.N {
+			blake3.DeriveKey("blake3 bench 2026-11-21 derive", buf, 32)
+		}
+	})
+}
