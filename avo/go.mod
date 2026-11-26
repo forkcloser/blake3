@@ -1,4 +1,4 @@
-module github.com/forkcloser/blake3/avo
+module github.com/forkcloser/go-blake3/avo
 
 go 1.26.0
 

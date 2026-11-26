@@ -30,7 +30,7 @@ import (
 	"math"
 	"math/bits"
 
-	"github.com/forkcloser/blake3/v2/internal/kernel"
+	"github.com/forkcloser/go-blake3/v2/internal/kernel"
 )
 
 // MaxGroup is the largest Encoding.Group any method accepts. It is a 1 GiB

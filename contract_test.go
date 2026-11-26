@@ -41,10 +41,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/forkcloser/blake3/v2"
-	"github.com/forkcloser/blake3/v2/guts"
-	"github.com/forkcloser/blake3/v2/internal/kernel"
-	"github.com/forkcloser/blake3/v2/internal/refimpl"
+	"github.com/forkcloser/go-blake3/v2"
+	"github.com/forkcloser/go-blake3/v2/guts"
+	"github.com/forkcloser/go-blake3/v2/internal/kernel"
+	"github.com/forkcloser/go-blake3/v2/internal/refimpl"
 )
 
 // cVectors is testdata/vectors.json, the BLAKE3 team's test vectors as they

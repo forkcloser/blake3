@@ -29,7 +29,7 @@
 // arguments.
 package guts
 
-import "github.com/forkcloser/blake3/v2/internal/kernel"
+import "github.com/forkcloser/go-blake3/v2/internal/kernel"
 
 // The domain flags a Node carries, and the tree's fixed sizes in bytes. The
 // values are the BLAKE3 specification's, but for MaxSIMD.

@@ -10,8 +10,8 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/forkcloser/blake3/v2/guts"
-	"github.com/forkcloser/blake3/v2/internal/refimpl"
+	"github.com/forkcloser/go-blake3/v2/guts"
+	"github.com/forkcloser/go-blake3/v2/internal/refimpl"
 )
 
 func TestContractPrimitives(t *testing.T) {
