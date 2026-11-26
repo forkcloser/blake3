@@ -1,7 +1,7 @@
 // The Go-source analyzers the shared recipes run, pinned as tool
 // directives in a module of their own so their dependency graph never
 // reaches the project's go.mod (book/tooling.md).
-module github.com/forkcloser/blake3/tools
+module github.com/forkcloser/go-blake3/tools
 
 go 1.26.8
 

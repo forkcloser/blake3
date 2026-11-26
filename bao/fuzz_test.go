@@ -5,8 +5,8 @@ import (
 	"io"
 	"testing"
 
-	"github.com/forkcloser/blake3/v2"
-	"github.com/forkcloser/blake3/v2/bao"
+	"github.com/forkcloser/go-blake3/v2"
+	"github.com/forkcloser/go-blake3/v2/bao"
 )
 
 // FuzzDecoders drives every function that parses an encoding — a length

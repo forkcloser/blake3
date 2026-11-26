@@ -7,9 +7,9 @@ import (
 	"math/bits"
 	"testing"
 
-	"github.com/forkcloser/blake3/v2"
-	"github.com/forkcloser/blake3/v2/internal/kernel"
-	"github.com/forkcloser/blake3/v2/internal/refimpl"
+	"github.com/forkcloser/go-blake3/v2"
+	"github.com/forkcloser/go-blake3/v2/internal/kernel"
+	"github.com/forkcloser/go-blake3/v2/internal/refimpl"
 )
 
 // FuzzWriteEquivalence: however an input is cut into writes, the digest is

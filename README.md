@@ -14,7 +14,7 @@ and where the two have since parted is recorded in
 ## Install
 
 ```
-go get github.com/forkcloser/blake3/v2
+go get github.com/forkcloser/go-blake3/v2
 ```
 
 Go 1.26 or later. The one dependency is `golang.org/x/sys`, for CPU feature
@@ -179,15 +179,17 @@ A root that is not a parent, the node `CompressChunk`, `CompressBuffer` or
 
 ## Migrating from v1
 
-v1 is `github.com/forkcloser/blake3`, through v1.1.0. Digests, keyed digests,
-derived keys, output streams and Bao encodings are the same bytes in v2. The
+v1 is `github.com/forkcloser/blake3`, through v1.1.0, under the repository's
+former name; so are v2's release candidates through v2.0.0-rc.4, as
+`github.com/forkcloser/blake3/v2`. Digests, keyed digests, derived keys,
+output streams and Bao encodings are the same bytes in v2. The
 calls below are the ones that change, and a v1 call fails to compile against
 v2 until it is changed. `enc` is a
 `bao.Encoding{Group: group, Outboard: outboard}`.
 
 | v1 | v2 |
 | --- | --- |
-| `import "github.com/forkcloser/blake3"`, `.../bao`, `.../guts` | `import "github.com/forkcloser/blake3/v2"`, `.../v2/bao`, `.../v2/guts` |
+| `import "github.com/forkcloser/blake3"`, `.../bao`, `.../guts` | `import "github.com/forkcloser/go-blake3/v2"`, `.../v2/bao`, `.../v2/guts` |
 | `blake3.New(32, nil)` | `blake3.New()` |
 | `blake3.New(32, key)`, `key` a 32-byte slice | `blake3.NewKeyed([32]byte(key))`; `blake3.Sum256Keyed` in one call |
 | `blake3.New(n, key)`, then `h.Sum(nil)` for `n` bytes | `io.ReadFull(h.XOF(), out)`, `out` of `n` bytes; `Sum` and `Size` are 32 bytes |
@@ -217,7 +219,7 @@ features. `Write` holds a group of sixteen chunks back and hands the kernels
 whole groups, so a write costs one kernel call per 16 KiB; from 192 KiB
 under AVX-512 and 256 KiB under AVX2 a write's trees go to goroutines, as do
 large output reads. Medians of six runs of `just bench-amd64` on 2026-11-22
-([run 45000959243](https://github.com/forkcloser/blake3/actions/runs/45000959243)),
+([run 45000959243](https://github.com/forkcloser/go-blake3/actions/runs/45000959243)),
 a GitHub `ubuntu-24.04` runner with an Intel Xeon 6975P-C (4 vCPUs), Go
 1.27.4; the AVX-512 kernels as dispatched, then the same binary with
 `GODEBUG=cpu.avx512f=off` (AVX2) and with `cpu.avx2=off` as well (pure Go).

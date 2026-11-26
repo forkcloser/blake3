@@ -10,8 +10,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/forkcloser/blake3/v2/internal/kernel"
-	"github.com/forkcloser/blake3/v2/internal/refimpl"
+	"github.com/forkcloser/go-blake3/v2/internal/kernel"
+	"github.com/forkcloser/go-blake3/v2/internal/refimpl"
 )
 
 // TestBoundedCompressChunk: a chunk of every length 0..1024 at a few
